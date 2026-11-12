@@ -100,8 +100,8 @@ Tensor next_token(Owner& work, Tensor hidden, models::Backbone backbone) {
     if(mini)last=work.keep(last.dense().to(kBFloat16).contiguous());
     else if(!direct)last=work.keep(last.dense().to(kFloat16).contiguous());
     auto logits=work.keep(work.program.model().logits(last,false));
-    if(direct || mini)return work.keep(ops::argmax(logits,-1));
-    return work.keep(ops::sample_greedy(work.keep(ops::reshape(ops::contiguous(logits),{logits.size(0),-1}))));
+    if(direct || mini)return work.keep(::tyloi::ops::argmax(logits,-1));
+    return work.keep(::tyloi::ops::sample_greedy(work.keep(::tyloi::ops::reshape(::tyloi::ops::contiguous(logits),{logits.size(0),-1}))));
 }
 
 /** Follow the family's prefill and model-owned decode dispatch before eager fallback. */
@@ -117,7 +117,7 @@ Tensor eager(Step& work,Tensor ids,models::Backbone backbone,bool production_req
         if(auto result=engine::decode(p.model(),p.state(),p.executor(),p.weights(),forward,input,decode)) {
             if(!result->ids)throw std::runtime_error("model decode returned no token IDs");
             auto token=work.keep(std::move(result->ids));
-            return token.device()==p.executor().device() ? token : work.keep(ops::copy(token,p.executor().device()));
+            return token.device()==p.executor().device() ? token : work.keep(::tyloi::ops::copy(token,p.executor().device()));
         }
     }
     if(backbone==models::Backbone::qwen4_exp && p.state().position()==0 &&
@@ -194,7 +194,7 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     auto& profiler=program.executor().profiler();
     struct Restore { CudaProfiler& p; bool enabled,graph; ~Restore(){p.enabled=enabled;p.graph_events=graph;} } restore{profiler,profiler.enabled,profiler.graph_events};
     if(!options.already_warmed)warmup_prefill(program,ids,profile,options.warmup);
-    if(!forced.empty())forced_input=work.keep(ops::tensor(forced,program.executor().device()));
+    if(!forced.empty())forced_input=work.keep(::tyloi::ops::tensor(forced,program.executor().device()));
     std::cout<<"decode_input_mode="<<(forced_input?"forced":"generated")<<"\n";
     profiler.enabled=profile;
     report_source(*source,"prefill_begin"); profiler.reset();
@@ -212,8 +212,8 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     profiler.report("prefill"); profiler.reset();
     if(gen==0)return 0;
     int produced=1;
-    bool eos=!stops.empty() && stops.contains(ops::item(next));
-    auto generated=work.keep(ops::empty({gen},TensorOptions().dtype(kInt64).device(program.executor().device())));
+    bool eos=!stops.empty() && stops.contains(::tyloi::ops::item(next));
+    auto generated=work.keep(::tyloi::ops::empty({gen},TensorOptions().dtype(kInt64).device(program.executor().device())));
     const auto stream=current_stream().stream();
     TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(generated.dense().data_ptr<std::int64_t>(),next.dense().data_ptr<std::int64_t>(),sizeof(std::int64_t),cudaMemcpyDeviceToDevice,stream));
     const auto* graph_option=env_lookup("TYLOINFER_CUDA_GRAPH");
@@ -237,10 +237,10 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     if(use_graph) {
         auto graph_scope=work.graph->enter();
         auto options=TensorOptions().dtype(kInt64).device(program.executor().device());
-        auto static_input=work.keep(ops::empty({1,1},options));
-        auto static_pos=work.keep(ops::empty({1},options));
-        auto static_len=work.keep(ops::empty({1},options));
-        auto static_step=work.keep(ops::empty({1},options));
+        auto static_input=work.keep(::tyloi::ops::empty({1,1},options));
+        auto static_pos=work.keep(::tyloi::ops::empty({1},options));
+        auto static_len=work.keep(::tyloi::ops::empty({1},options));
+        auto static_step=work.keep(::tyloi::ops::empty({1},options));
         auto graph_stream=current_stream().stream();
         const std::int64_t pos=program.state().position(),len=pos+1,one=1;
         TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_input.dense().data_ptr<std::int64_t>(),next.dense().data_ptr<std::int64_t>(),sizeof(pos),cudaMemcpyDeviceToDevice,graph_stream));
@@ -251,7 +251,7 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
         auto states=program.state().graph_state();
         work.graph->prepare(states);
         const auto planned=pos+gen;
-        const auto parts=ops::attention_parts(planned,program.executor().device());
+        const auto parts=::tyloi::ops::attention_parts(planned,program.executor().device());
         auto mode=program.executor().forward_mode(config.layer_placement.primary_device());
         const auto static_forward=[&] {
             models::Input input; input.ids=static_input; input.positions=static_pos; input.lengths=static_len;
@@ -269,25 +269,25 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
         profiler.reset(); profiler.graph_events=profile_graph;
         work.graph->begin();
         auto static_next=profiler.measure("decode.model_total",[&]{return static_forward();});
-        profiler.measure("decode.commit",[&]{ops::decode_commit(static_next,generated,static_step,static_input,static_pos,static_len);return 0;});
+        profiler.measure("decode.commit",[&]{::tyloi::ops::decode_commit(static_next,generated,static_step,static_input,static_pos,static_len);return 0;});
         work.graph->end(program.state().storage());
         report_cuda_memory(config.report_cuda_memory,"graph_captured");
         replay_start=Clock::now();
         for(int i=1;i<gen;++i) {
             work.graph->replay(); produced=i+1;
-            if(!stops.empty()) { work.graph->wait(); if(stops.contains(ops::item(static_next))) { eos=true; break; } }
+            if(!stops.empty()) { work.graph->wait(); if(stops.contains(::tyloi::ops::item(static_next))) { eos=true; break; } }
         }
         work.graph->wait();
     } else if(!eos) {
         for(int i=1;i<gen;++i) {
             Step step{program};
-            auto input=step.keep(ops::reshape(forced_input?step.keep(ops::slice(forced_input,0,i-1,i)):next,{1,1}));
+            auto input=step.keep(::tyloi::ops::reshape(forced_input?step.keep(::tyloi::ops::slice(forced_input,0,i-1,i)):next,{1,1}));
             next=profiler.measure("decode.eager_model",[&]{return eager(step,input,plan.backbone);});
             profiler.measure("decode.eager_commit",[&]{
                 TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(generated.dense().data_ptr<std::int64_t>()+i,
                     next.dense().data_ptr<std::int64_t>(),sizeof(std::int64_t),cudaMemcpyDeviceToDevice,stream)); return 0;});
             produced=i+1;
-            if(!stops.empty() && stops.contains(ops::item(next))) { eos=true; break; }
+            if(!stops.empty() && stops.contains(::tyloi::ops::item(next))) { eos=true; break; }
             if(i==1 && flash && stops.empty()) { TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream())); first=Clock::now(); measured_first=true; }
             if(gen>=4 && i==gen/2 && flash && stops.empty()) { TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream())); halfway=Clock::now(); measured_half=true; }
             if(gen>256 && i==gen-1-128 && flash && stops.empty()) { TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream())); last_window=Clock::now(); measured_last=true; }

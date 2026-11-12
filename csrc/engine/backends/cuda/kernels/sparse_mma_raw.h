@@ -14,7 +14,7 @@ struct Hot {
     int64_t cold_cells = 0;
 };
 struct Plan {
-    int batch, tokens, heads, kv_heads, max_seq, selected, width;
+    int batch, tokens, heads, kv_heads, max_seq, selected, width, value_width;
     int blocks, parts, tiles, iter_j, iter_z_gqa, threads, device;
     std::size_t shared_bytes, workspace_bytes;
     bool hot;
@@ -22,7 +22,7 @@ struct Plan {
 
 /** Plan the original stream-K launch on the current CUDA device. */
 Plan plan(int batch, int tokens, int heads, int kv_heads, int max_seq,
-          int selected, int width, bool hot);
+          int selected, int width, int value_width, bool hot);
 
 /** Launch into caller-owned float output and workspace on the supplied stream. */
 void launch(const Plan& plan, const void* query, const void* key, const void* value,

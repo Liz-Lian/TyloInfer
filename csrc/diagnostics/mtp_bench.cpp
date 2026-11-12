@@ -26,7 +26,6 @@
 namespace tyloi::cuda::diagnostics {
 namespace {
 using Clock = std::chrono::steady_clock;
-namespace ops = ::tyloi::ops;
 
 /** Retain request and tensor owners until outstanding work has drained. */
 struct Work {
@@ -98,8 +97,8 @@ int run_qwen35_mtp_bench(Program& program, bool enable_mtp,
             {1, 2, 3}, {100, 200, 300, 400, 500, 600, 700}, std::vector<std::int64_t>(17, 10)}) {
         work.retire();
         state.reset(1);
-        auto input = work.keep(ops::contiguous(work.keep(ops::reshape(
-            work.keep(ops::tensor(prompt, device)), {1, -1}))));
+        auto input = work.keep(::tyloi::ops::contiguous(work.keep(::tyloi::ops::reshape(
+            work.keep(::tyloi::ops::tensor(prompt, device)), {1, -1}))));
         std::vector<std::int64_t> reference;
         reference.reserve(generated_tokens);
         for (int step = 0; step < generated_tokens; ++step) {
@@ -107,15 +106,15 @@ int run_qwen35_mtp_bench(Program& program, bool enable_mtp,
             arguments.ids = input;
             arguments.advance = true;
             auto hidden = work.keep(model.forward(std::move(arguments), state, options));
-            auto last = work.keep(ops::slice(hidden, 1, hidden.size(1) - 1, hidden.size(1)));
-            last = work.keep(ops::contiguous(work.keep(ops::cast(
-                work.keep(ops::reshape(last, {hidden.size(0), hidden.size(2)})), kFloat16))));
+            auto last = work.keep(::tyloi::ops::slice(hidden, 1, hidden.size(1) - 1, hidden.size(1)));
+            last = work.keep(::tyloi::ops::contiguous(work.keep(::tyloi::ops::cast(
+                work.keep(::tyloi::ops::reshape(last, {hidden.size(0), hidden.size(2)})), kFloat16))));
             auto logits = work.keep(model.logits(last, false));
-            auto scores = work.keep(ops::reshape(work.keep(ops::contiguous(logits)), {logits.size(0), -1}));
-            auto next = work.keep(ops::sample_greedy(scores));
-            reference.push_back(ops::item(next));
+            auto scores = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::contiguous(logits)), {logits.size(0), -1}));
+            auto next = work.keep(::tyloi::ops::sample_greedy(scores));
+            reference.push_back(::tyloi::ops::item(next));
             work.tensors.clear(); // item() is the original per-token synchronization point.
-            input = work.keep(ops::reshape(next, {1, 1}));
+            input = work.keep(::tyloi::ops::reshape(next, {1, 1}));
         }
         cudaStreamSynchronize(current_stream().stream());
         for (int repeat = -1; repeat < repetitions; ++repeat) {

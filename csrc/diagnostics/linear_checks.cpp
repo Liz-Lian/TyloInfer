@@ -9,6 +9,7 @@
 #include "engine/backends/cuda/executor/config.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
+#include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/graph.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"

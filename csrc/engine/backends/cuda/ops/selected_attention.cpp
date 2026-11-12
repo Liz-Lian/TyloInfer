@@ -34,7 +34,7 @@ static DenseTensor run_mma(const DenseTensor& q,const DenseTensor& k,const Dense
     if(mask.defined()) TYLOINFER_RUNTIME_CHECK(mask.is_cuda() && mask.device()==q.device() && mask.is_contiguous() && mask.scalar_type()==::tyloi::kFloat16 && mask.sizes()==indices.sizes(),name,": invalid mask");
     if(sinks.defined()) TYLOINFER_RUNTIME_CHECK(sinks.is_cuda() && sinks.device()==q.device() && sinks.is_contiguous() && sinks.scalar_type()==::tyloi::kFloat32 && sinks.numel()==heads,name,": invalid sinks");
     const MfqCudaGuard guard(q.device());
-    auto plan=mma::plan(B,M,heads,kv_heads,max_seq,selected,width,hot.mapping!=nullptr);
+    auto plan=mma::plan(B,M,heads,kv_heads,max_seq,selected,width,width,hot.mapping!=nullptr);
     const size_t meta_elements=plan.workspace_bytes/sizeof(float);
     TYLOINFER_RUNTIME_CHECK(meta_elements<=size_t(std::numeric_limits<int64_t>::max()),name,": meta workspace is too large");
     if(!meta.defined()) meta=::tyloi::cuda::empty({int64_t(meta_elements)},q.options().dtype(::tyloi::kFloat32));

@@ -21,7 +21,6 @@
 
 namespace tyloi::cuda::diagnostics {
 namespace {
-namespace ops = ::tyloi::ops;
 using Clock = std::chrono::steady_clock;
 
 /** Own all submitted inputs and observations until the execution owner drains. */
@@ -29,7 +28,7 @@ struct Work {
     Program& program;
     std::vector<Tensor> values;
     std::vector<models::Input::Trace> traces;
-    std::vector<ops::Trace> stages;
+    std::vector<::tyloi::ops::Trace> stages;
     ~Work() noexcept {
         try { program.drain(); }
         catch (const std::exception& e) { std::cerr << "compare_cleanup error=" << e.what() << '\n'; }
@@ -45,7 +44,7 @@ models::ForwardOptions options(Program& program) {
 }
 
 Tensor hidden(Work& work, Tensor ids, Tensor lengths = {}, std::int64_t planned = 0,
-        models::Input::Trace* trace = nullptr, ops::Trace* stages = nullptr) {
+        models::Input::Trace* trace = nullptr, ::tyloi::ops::Trace* stages = nullptr) {
     models::Input input;
     input.ids = work.keep(std::move(ids)); input.lengths = work.keep(std::move(lengths));
     input.advance = true; input.kv_length = planned; input.trace = trace;
@@ -85,12 +84,12 @@ Tensor next(Work& work, const Tensor& value, models::Backbone backbone) {
     auto row = work.keep(value.dense().select(1, value.size(1)-1));
     if (!direct) row = work.keep(row.dense().to(mini ? kBFloat16 : kFloat16).contiguous());
     auto logits = work.keep(work.program.model().logits(row, false));
-    if (direct || mini) return work.keep(ops::argmax(logits, -1));
-    return work.keep(ops::sample_greedy(work.keep(ops::reshape(work.keep(ops::contiguous(logits)), {logits.size(0), -1}))));
+    if (direct || mini) return work.keep(::tyloi::ops::argmax(logits, -1));
+    return work.keep(::tyloi::ops::sample_greedy(work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::contiguous(logits)), {logits.size(0), -1}))));
 }
 
 Tensor length(Work& work) {
-    return work.keep(ops::full(std::array<std::int64_t, 1>{1}, work.program.state().position()+1, work.program.executor().device()));
+    return work.keep(::tyloi::ops::full(std::array<std::int64_t, 1>{1}, work.program.state().position()+1, work.program.executor().device()));
 }
 
 void statistics(const Tensor& reference, const Tensor& candidate, const char* prefix, bool relative) {
@@ -136,13 +135,13 @@ int compare_mma_decode(Program& program, Tensor ids, int steps, std::int64_t pla
     kernels.mma_decode = false;
     {
         AttentionScope policy(executor, kernels); program.drain(); program.state().reset(1);
-        auto input = work.keep(ops::reshape(next(work, hidden(work, ids), backbone), {1,1}));
-        first = ops::item(input);
+        auto input = work.keep(::tyloi::ops::reshape(next(work, hidden(work, ids), backbone), {1,1}));
+        first = ::tyloi::ops::item(input);
         for (int step = 0; step < steps; ++step) {
             auto logits = project(work, hidden(work, input, length(work)), kFloat16, false);
-            reference.push_back(work.keep(ops::clone(work.keep(logits.dense().to(kFloat32)))));
-            auto token = ops::item(work.keep(ops::argmax(reference.back(), -1))); teachers.push_back(token);
-            input = work.keep(ops::reshape(work.keep(ops::full(std::array<std::int64_t, 1>{1}, token, executor.device())), {1,1}));
+            reference.push_back(work.keep(::tyloi::ops::clone(work.keep(logits.dense().to(kFloat32)))));
+            auto token = ::tyloi::ops::item(work.keep(::tyloi::ops::argmax(reference.back(), -1))); teachers.push_back(token);
+            input = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::full(std::array<std::int64_t, 1>{1}, token, executor.device())), {1,1}));
             work.values.clear();
         }
     }
@@ -151,7 +150,7 @@ int compare_mma_decode(Program& program, Tensor ids, int steps, std::int64_t pla
     kernels.mma_decode = true;
     AttentionScope policy(executor, kernels); program.drain(); program.state().reset(1);
     (void)next(work, hidden(work, ids), backbone);
-    auto input = work.keep(ops::reshape(work.keep(ops::full(std::array<std::int64_t, 1>{1}, first, executor.device())), {1,1}));
+    auto input = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::full(std::array<std::int64_t, 1>{1}, first, executor.device())), {1,1}));
     double kl_sum=0., kl_max=0., abs_sum=0., delta_sq=0., reference_sq=0., max_abs=0.;
     int same=0, first_difference=-1; std::int64_t values=0;
     for (int step=0; step<steps; ++step) {
@@ -164,7 +163,7 @@ int compare_mma_decode(Program& program, Tensor ids, int steps, std::int64_t pla
         reference_sq+=ref.square().sum().item<double>(); max_abs=std::max(max_abs,delta.abs().max().item<double>());
         values+=delta.numel(); const bool equal=actual.argmax(-1).eq(ref.argmax(-1)).item<bool>();
         same += equal ? 1 : 0; if (!equal && first_difference<0) first_difference=step;
-        input = work.keep(ops::reshape(work.keep(ops::full(std::array<std::int64_t, 1>{1}, teachers[step], executor.device())), {1,1}));
+        input = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::full(std::array<std::int64_t, 1>{1}, teachers[step], executor.device())), {1,1}));
         work.values.clear();
     }
     program.drain();
@@ -186,7 +185,7 @@ int repeat_prefill(Program& program, Tensor ids, int count, bool trace) {
         auto logits = trace ? project(work, value, kFloat16, false) : family_last_logits(work, value, backbone);
         executor.synchronize(); const auto end=Clock::now();
         std::cout << "prefill_repeat=" << i+1 << " sec=" << std::chrono::duration<double>(end-start).count()
-                  << " top=" << ops::item(work.keep(ops::argmax(logits,-1))) << '\n';
+                  << " top=" << ::tyloi::ops::item(work.keep(::tyloi::ops::argmax(logits,-1))) << '\n';
         if (trace && i>0) {
             if (work.stages[i].size()!=work.stages[0].size() || work.traces[i].size()!=work.traces[0].size())
                 throw std::runtime_error("prefill repeat trace count changed");

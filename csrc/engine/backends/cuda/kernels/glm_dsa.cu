@@ -5,16 +5,16 @@
 #include <mma.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 
-#include "mfq_sparse_attn_mma_f16.cuh"
+#include "sparse_mma_raw.h"
 
 namespace {
 
 constexpr int kMlaDq = 576;
 constexpr int kMlaDv = 512;
 constexpr int kMlaHeads = 64;
-constexpr int kMlaHeadsPerTile = 16;
 constexpr int kIndexerHeads = 32;
 constexpr int kIndexerDim = 128;
 constexpr int kIndexerKeysPerTile = 64;
@@ -467,10 +467,25 @@ __global__ void glm_indexer_scores_kernel(
                 indices.size(1) == q.size(2) && indices.size(2) > 0 &&
                 indices.size(2) % 32 == 0,
                 "glm_sparse_mla: shape mismatch");
-    auto cache = kv.unsqueeze(1);
-    return mfq_sparse_attn_mma::launch<
-        kMlaDq, kMlaDv, 1, kMlaHeadsPerTile, true>(
-        q, cache, cache, indices,
-        ::tyloi::DenseTensor{}, ::tyloi::DenseTensor{},
-        meta, scale, "glm_sparse_mla");
+    TYLOINFER_RUNTIME_CHECK(q.size(0) <= INT_MAX && q.size(2) <= INT_MAX &&
+                kv.size(1) <= INT_MAX && indices.size(2) <= INT_MAX,
+                "glm_sparse_mla: attention dimensions exceed 32-bit indexing");
+    TYLOINFER_RUNTIME_CHECK(kv.device() == q.device() && indices.device() == q.device() &&
+                meta.device() == q.device(), "glm_sparse_mla: tensors must share one CUDA device");
+    const MfqCudaGuard guard(q.device());
+    namespace mma = tyloi::cuda::sparse_mma_raw;
+    const int batch = static_cast<int>(q.size(0));
+    const int tokens = static_cast<int>(q.size(2));
+    const auto plan = mma::plan(batch, tokens, kMlaHeads, 1,
+        static_cast<int>(kv.size(1)), static_cast<int>(indices.size(2)), kMlaDq, kMlaDv, false);
+    TYLOINFER_RUNTIME_CHECK(static_cast<size_t>(meta.numel()) >= plan.workspace_bytes / sizeof(float),
+                "glm_sparse_mla: meta workspace too small");
+    auto output = ::tyloi::cuda::empty(
+        {batch, tokens, kMlaHeads, kMlaDv}, q.options().dtype(::tyloi::kFloat32));
+    const int64_t strides[] = {q.stride(0), q.stride(1), q.stride(2), q.stride(3)};
+    mma::launch(plan, q.data_ptr(), kv.data_ptr(), kv.data_ptr(), indices.data_ptr<int32_t>(),
+        nullptr, nullptr, nullptr, strides, false, true, false, 0, {}, static_cast<float>(scale),
+        output.data_ptr<float>(), meta.data_ptr(), static_cast<size_t>(meta.numel()) * sizeof(float),
+        false, mfq_current_cuda_stream());
+    return output;
 }

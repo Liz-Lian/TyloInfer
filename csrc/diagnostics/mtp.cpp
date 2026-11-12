@@ -26,7 +26,6 @@
 
 namespace tyloi::cuda::diagnostics {
 namespace {
-namespace ops = ::tyloi::ops;
 
 /** Retain diagnostic inputs, request state and staged copies until drain. */
 struct Work {
@@ -61,7 +60,7 @@ struct Work {
 nlohmann::json json_tensor(const Tensor& value) {
     std::vector<std::int64_t> shape;
     for (std::int64_t i = 0; i < value.dim(); ++i) shape.push_back(value.size(i));
-    return {{"shape", shape}, {"data", ops::floats(value)}};
+    return {{"shape", shape}, {"data", ::tyloi::ops::floats(value)}};
 }
 
 void close(const Tensor& actual, const Tensor& expected, const char* label) {
@@ -70,7 +69,7 @@ void close(const Tensor& actual, const Tensor& expected, const char* label) {
     for (std::int64_t i = 0; i < actual.dim(); ++i)
         if (actual.size(i) != expected.size(i))
             throw std::runtime_error(std::string("Nemotron-H MTP ") + label + " changed its shape");
-    const auto a = ops::floats(actual), b = ops::floats(expected);
+    const auto a = ::tyloi::ops::floats(actual), b = ::tyloi::ops::floats(expected);
     double worst = 0.;
     for (std::size_t i = 0; i < a.size(); ++i)
         worst = std::max(worst, std::abs(double(a[i]) - b[i]) / (.003 + .003 * std::abs(b[i])));
@@ -80,7 +79,7 @@ void close(const Tensor& actual, const Tensor& expected, const char* label) {
 }
 
 Tensor slice(Work& work, const Tensor& tensor, std::int64_t begin, std::int64_t count) {
-    return work.keep(ops::slice(tensor, 1, begin, begin + count));
+    return work.keep(::tyloi::ops::slice(tensor, 1, begin, begin + count));
 }
 }  // namespace
 
@@ -103,7 +102,7 @@ int run_nemotron_h_mtp_check(Program& program) {
     const auto mode = executor.forward_mode(device.index);
     const models::ForwardOptions options{mode.kv_capacity, mode.trace, mode.trace_layer, device.index};
     work.id_values = {1, 2, 3, 4, 5, 6, 7};
-    const auto ids = work.keep(ops::reshape(work.keep(ops::tensor(work.id_values, device)), {1, 7}));
+    const auto ids = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::tensor(work.id_values, device)), {1, 7}));
     const auto embedding = work.keep(model.embedding(ids, device.index));
     const auto width = embedding.size(2);
     work.previous_values.resize(static_cast<std::size_t>(7 * width));
@@ -111,7 +110,7 @@ int run_nemotron_h_mtp_check(Program& program) {
         const volatile float product = static_cast<float>(i % 31) * .01f;
         work.previous_values[static_cast<std::size_t>(i)] = product - .15f;
     }
-    const auto previous = work.keep(ops::reshape(work.keep(ops::tensor(work.previous_values, device)), {1, 7, width}));
+    const auto previous = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::tensor(work.previous_values, device)), {1, 7, width}));
     const auto reset = [&] {
         program.drain();
         mtp->reset(predictor, 1);
@@ -135,7 +134,7 @@ int run_nemotron_h_mtp_check(Program& program) {
     std::vector<Tensor> pieces;
     for (auto [begin, count] : std::vector<std::pair<std::int64_t, std::int64_t>>{{0, 2}, {2, 1}, {3, 4}})
         pieces.push_back(head(slice(work, previous, begin, count), slice(work, ids, begin, count)));
-    close(work.keep(ops::cat(pieces, 1)), full, "chunked forward");
+    close(work.keep(::tyloi::ops::cat(pieces, 1)), full, "chunked forward");
 
     reset();
     (void)head(slice(work, previous, 0, 4), slice(work, ids, 0, 4));
@@ -145,7 +144,7 @@ int run_nemotron_h_mtp_check(Program& program) {
     mtp->trim_cache_to(predictor, committed);
     const auto replayed = head(slice(work, previous, 4, 1), slice(work, ids, 4, 1));
     close(replayed, rejected, "rollback replay");
-    const auto tail = work.keep(ops::cat(std::vector<Tensor>{replayed,
+    const auto tail = work.keep(::tyloi::ops::cat(std::vector<Tensor>{replayed,
         head(slice(work, previous, 5, 2), slice(work, ids, 5, 2))}, 1));
     close(tail, slice(work, full, 4, 3), "continuation after rollback");
     result["replayed"] = json_tensor(replayed);
@@ -155,7 +154,7 @@ int run_nemotron_h_mtp_check(Program& program) {
     (void)head(slice(work, previous, 0, 4), slice(work, ids, 0, 4));
     const auto draft = head(slice(work, previous, 4, 1), slice(work, ids, 4, 1));
     const auto following = head(slice(work, previous, 5, 2), slice(work, ids, 5, 2));
-    const auto committed_rows = work.keep(ops::cat(std::vector<Tensor>{draft, following}, 1));
+    const auto committed_rows = work.keep(::tyloi::ops::cat(std::vector<Tensor>{draft, following}, 1));
     close(committed_rows, slice(work, full, 4, 3), "continuation after commit");
     result["committed"] = json_tensor(committed_rows);
 
@@ -270,14 +269,14 @@ int run_flash_next_mtp_check(Program& program) {
     const auto mode = executor.forward_mode(device.index);
     const models::ForwardOptions options{mode.kv_capacity, mode.trace, mode.trace_layer, device.index};
     work.id_values = {1, 2, 3, 4, 5, 6, 7};
-    const auto ids = work.keep(ops::reshape(work.keep(ops::tensor(work.id_values, device)), {1, 7}));
+    const auto ids = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::tensor(work.id_values, device)), {1, 7}));
     const auto width = mtp->width();
     work.previous_values.resize(static_cast<std::size_t>(7 * width));
     for (std::int64_t i = 0; i < 7 * width; ++i) {
         const volatile float product = static_cast<float>(i % 31) * .01f;
         work.previous_values[static_cast<std::size_t>(i)] = product - .15f;
     }
-    const auto previous = work.keep(ops::reshape(work.keep(ops::tensor(work.previous_values, device)), {1, 7, width}));
+    const auto previous = work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::tensor(work.previous_values, device)), {1, 7, width}));
     const auto reset = [&] { program.drain(); mtp->reset(predictor, 1); };
     const auto evaluate = [&](const Tensor& hidden, const Tensor& next_ids,
             std::int64_t depth = 0, bool cache = true, const Tensor& positions = Tensor{}) {
@@ -303,18 +302,18 @@ int run_flash_next_mtp_check(Program& program) {
         std::vector<Tensor> pieces;
         for (auto [begin, count] : std::vector<std::pair<std::int64_t, std::int64_t>>{{0, 2}, {2, 1}, {3, 4}})
             pieces.push_back(evaluate(slice(work, previous, begin, count), slice(work, ids, begin, count), i).sample_hidden);
-        row["chunked"] = json_tensor(work.keep(ops::cat(pieces, 1)));
+        row["chunked"] = json_tensor(work.keep(::tyloi::ops::cat(pieces, 1)));
         reset();
         row["reset"] = json_tensor(evaluate(previous, ids, i).sample_hidden);
-        row["batch"] = json_tensor(evaluate(work.keep(ops::repeat(previous, {2, 1, 1})),
-            work.keep(ops::repeat(ids, {2, 1})), i).sample_hidden);
+        row["batch"] = json_tensor(evaluate(work.keep(::tyloi::ops::repeat(previous, {2, 1, 1})),
+            work.keep(::tyloi::ops::repeat(ids, {2, 1})), i).sample_hidden);
         row["batch_reset"] = json_tensor(evaluate(previous, ids, i).sample_hidden);
-        auto positions = work.keep(ops::add(work.keep(ops::reshape(ids, {7})), 2));
+        auto positions = work.keep(::tyloi::ops::add(work.keep(::tyloi::ops::reshape(ids, {7})), 2));
         if (multi_axis) {
             std::vector<Tensor> axes;
             for (int offset : {10, 0, 2, 4})
-                axes.push_back(work.keep(ops::unsqueeze(work.keep(ops::add(positions, offset)), 0)));
-            positions = work.keep(ops::cat(axes, 0));
+                axes.push_back(work.keep(::tyloi::ops::unsqueeze(work.keep(::tyloi::ops::add(positions, offset)), 0)));
+            positions = work.keep(::tyloi::ops::cat(axes, 0));
         }
         row["axis"] = json_tensor(evaluate(previous, ids, i, false, positions).sample_hidden);
         reset();
@@ -340,11 +339,11 @@ int run_flash_next_mtp_check(Program& program) {
     for (int i = 0; i < sampling.max_tokens; ++i) {
         models::Input current_input; current_input.ids = current; current_input.advance = true;
         auto hidden = work.keep(model.forward(std::move(current_input), state, options));
-        auto last = work.keep(ops::reshape(slice(work, hidden, hidden.size(1) - 1, 1), {hidden.size(0), hidden.size(2)}));
-        auto logits = work.keep(model.logits(work.keep(ops::contiguous(last)), false));
-        auto next = work.keep(ops::sample_greedy(work.keep(ops::reshape(work.keep(ops::contiguous(logits)), {logits.size(0), -1}))));
-        expected_tokens.push_back(ops::item(next));
-        current = work.keep(ops::reshape(next, {1, 1}));
+        auto last = work.keep(::tyloi::ops::reshape(slice(work, hidden, hidden.size(1) - 1, 1), {hidden.size(0), hidden.size(2)}));
+        auto logits = work.keep(model.logits(work.keep(::tyloi::ops::contiguous(last)), false));
+        auto next = work.keep(::tyloi::ops::sample_greedy(work.keep(::tyloi::ops::reshape(work.keep(::tyloi::ops::contiguous(logits)), {logits.size(0), -1}))));
+        expected_tokens.push_back(::tyloi::ops::item(next));
+        current = work.keep(::tyloi::ops::reshape(next, {1, 1}));
     }
     const auto generate = [&](MfqSamplingParams params, int stop_after) {
         work.retire_request(); state.reset(1); mtp->reset(predictor, 1);

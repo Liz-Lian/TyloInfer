@@ -26,7 +26,6 @@ std::vector<::tyloi::DenseTensor> dsv4_hc_coefficients_cuda(
     ::tyloi::DenseTensor post,
     ::tyloi::DenseTensor combination);
 
-namespace tyloi::cuda::deepseek_v4 {
 // CPU sinkhorn reference used to validate the fused CUDA hc kernels.
 std::vector<::tyloi::DenseTensor> dsv4_hc_split_sinkhorn(
     ::tyloi::DenseTensor mixes,
@@ -35,4 +34,3 @@ std::vector<::tyloi::DenseTensor> dsv4_hc_split_sinkhorn(
     std::int64_t hc_mult,
     std::int64_t iterations,
     double eps);
-} // namespace tyloi::cuda::deepseek_v4

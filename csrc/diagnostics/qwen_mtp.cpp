@@ -25,7 +25,6 @@
 
 namespace tyloi::cuda::diagnostics {
 namespace {
-namespace ops = ::tyloi::ops;
 
 struct Work {
     Program& program;
@@ -33,7 +32,7 @@ struct Work {
     std::vector<std::vector<float>> floats;
     std::vector<std::vector<std::int64_t>> ids;
     models::Input::Trace verify_trace, serial_trace;
-    ops::Trace verify_stages, serial_stages;
+    ::tyloi::ops::Trace verify_stages, serial_stages;
     Tensor raw;
     std::optional<TextSessionState> actual_state, reference_state;
     std::optional<engine::InferenceRequest> request;
@@ -59,7 +58,7 @@ void require(bool value, const char* message) {
 }
 
 Tensor rows(Work& w, const Tensor& x, std::int64_t start, std::int64_t count) {
-    return w.keep(ops::slice(x, 1, start, start + count));
+    return w.keep(::tyloi::ops::slice(x, 1, start, start + count));
 }
 
 void compare(const Tensor& actual, const Tensor& reference, double tolerance,
@@ -67,7 +66,7 @@ void compare(const Tensor& actual, const Tensor& reference, double tolerance,
     require(actual.dim() == reference.dim(), "MTP gate tensor shape mismatch");
     for (std::int64_t i = 0; i < actual.dim(); ++i)
         require(actual.size(i) == reference.size(i), "MTP gate tensor shape mismatch");
-    const auto a = ops::floats(actual), r = ops::floats(reference);
+    const auto a = ::tyloi::ops::floats(actual), r = ::tyloi::ops::floats(reference);
     double squared = 0., norm = 0.;
     for (std::size_t i = 0; i < a.size(); ++i) {
         require(std::isfinite(a[i]) && std::isfinite(r[i]), "nonfinite MTP gate value");
@@ -104,16 +103,16 @@ int run_qwen35_mtp_check(Program& program) {
         input[i] = static_cast<float>(i % 33 - 16) / 16.f;
         gate[i] = static_cast<float>(i % 31 - 15) / 4.f;
     }
-    auto x = w.keep(ops::reshape(w.keep(ops::tensor(input, device)), {1, 6, 33}));
-    auto g = w.keep(ops::reshape(w.keep(ops::tensor(gate, device)), {1, 6, 33}));
-    auto ident = w.keep(ops::reshape(w.keep(ops::tensor(identity, device)), {33, 33}));
+    auto x = w.keep(::tyloi::ops::reshape(w.keep(::tyloi::ops::tensor(input, device)), {1, 6, 33}));
+    auto g = w.keep(::tyloi::ops::reshape(w.keep(::tyloi::ops::tensor(gate, device)), {1, 6, 33}));
+    auto ident = w.keep(::tyloi::ops::reshape(w.keep(::tyloi::ops::tensor(identity, device)), {33, 33}));
     for (auto dtype : {kFloat32, kFloat16, kBFloat16}) {
-        auto weight = w.keep(ops::cast(ident, dtype));
+        auto weight = w.keep(::tyloi::ops::cast(ident, dtype));
         const double tolerance = dtype == kBFloat16 ? .008 : dtype == kFloat16 ? .001 : 2.e-6;
         for (int m = 1; m <= 6; ++m) for (auto activation : {InputGateMode::Sigmoid, InputGateMode::Silu}) {
             auto actual = w.keep(project.gated(weight, rows(w, x, 0, m).dense(), rows(w, g, 0, m).dense(), activation));
             require(actual.scalar_type() == dtype && actual.size(1) == m, "dense gate output dtype or shape mismatch");
-            auto values = ops::floats(actual);
+            auto values = ::tyloi::ops::floats(actual);
             for (int i = 0; i < m * 33; ++i) {
                 const double activated = (activation == InputGateMode::Sigmoid ? 1. : gate[i]) / (1. + std::exp(-double(gate[i])));
                 const double reference = double(input[i]) * activated;
@@ -126,23 +125,23 @@ int run_qwen35_mtp_check(Program& program) {
     auto& pi = w.floats[3]; auto& pw = w.floats[4]; pi.resize(6 * 257); pw.resize(131 * 257);
     for (std::size_t i = 0; i < pi.size(); ++i) pi[i] = static_cast<float>(std::sin(double(i) * .37));
     for (std::size_t i = 0; i < pw.size(); ++i) pw[i] = static_cast<float>(std::cos(double(i) * .19) / 17.);
-    auto px = w.keep(ops::reshape(w.keep(ops::tensor(pi, device)), {1, 6, 257}));
-    auto pweight = w.keep(ops::reshape(w.keep(ops::tensor(pw, device)), {131, 257}));
+    auto px = w.keep(::tyloi::ops::reshape(w.keep(::tyloi::ops::tensor(pi, device)), {1, 6, 257}));
+    auto pweight = w.keep(::tyloi::ops::reshape(w.keep(::tyloi::ops::tensor(pw, device)), {131, 257}));
     for (auto dtype : {kFloat32, kFloat16, kBFloat16}) {
-        auto weight = w.keep(ops::cast(pweight, dtype));
+        auto weight = w.keep(::tyloi::ops::cast(pweight, dtype));
         std::vector<Tensor> serial;
         for (int row = 0; row < 6; ++row) serial.push_back(w.keep(project.run(weight, rows(w, px, row, 1).dense())));
-        auto reference = w.keep(ops::cat(serial, 1));
+        auto reference = w.keep(::tyloi::ops::cat(serial, 1));
         for (int m = 2; m <= 6; ++m) {
             auto actual = w.keep(project.run(weight, rows(w, px, 0, m).dense()));
-            require(ops::equal(actual, rows(w, reference, 0, m)), "short dense projection differs from per-token decode");
+            require(::tyloi::ops::equal(actual, rows(w, reference, 0, m)), "short dense projection differs from per-token decode");
         }
     }
     std::cout << "mtp_check dense_decode_geometry_cases=15 PASS\n";
     w.retire();
     const auto ids = [&](std::vector<std::int64_t> tokens) {
         w.ids.push_back(std::move(tokens));
-        return w.keep(ops::reshape(w.keep(ops::tensor(w.ids.back(), device)), {1, -1}));
+        return w.keep(::tyloi::ops::reshape(w.keep(::tyloi::ops::tensor(w.ids.back(), device)), {1, -1}));
     };
     const auto forward = [&](const Tensor& tokens, std::int64_t confirmed, models::Input::Trace* trace,
                              Tensor* raw, const models::ForwardOptions& forward_options) {
@@ -153,7 +152,7 @@ int run_qwen35_mtp_check(Program& program) {
     const auto logits = [&](const Tensor& tokens, bool capped) {
         auto hidden = forward(tokens, 0, nullptr, nullptr, options);
         auto last = rows(w, hidden, hidden.size(1) - 1, 1);
-        last = w.keep(ops::contiguous(w.keep(ops::cast(w.keep(ops::reshape(last, {hidden.size(0), hidden.size(2)})), kFloat16))));
+        last = w.keep(::tyloi::ops::contiguous(w.keep(::tyloi::ops::cast(w.keep(::tyloi::ops::reshape(last, {hidden.size(0), hidden.size(2)})), kFloat16))));
         return w.keep(model.logits(last, capped));
     };
     const std::vector<std::int64_t> prompt{100, 200, 300, 400, 500, 600, 700};
@@ -165,7 +164,7 @@ int run_qwen35_mtp_check(Program& program) {
         (void)forward(ids({37, 41, 43}), 1, &w.verify_trace, nullptr, traced);
         if (accepted == 2) state.commit_speculative(); else state.rollback_speculative(accepted);
         require(state.position() == 8 + accepted, "MTP resolution retained an incorrect logical cache length");
-        auto actual = w.keep(ops::clone(logits(ids({47}), true)));
+        auto actual = w.keep(::tyloi::ops::clone(logits(ids({47}), true)));
         auto retained = prompt; retained.push_back(37); if (accepted >= 1) retained.push_back(41);
         if (accepted >= 2) retained.push_back(43);
         retained.push_back(47);
@@ -205,7 +204,7 @@ int run_qwen35_mtp_check(Program& program) {
         auto next = rows(w, ids(prompt), 1, tokens);
         auto traced = options; traced.trace_layer = 0; traced.trace = tokens == 2 ? &w.verify_stages : nullptr;
         program.drain(); mtp->reset(predictor, 1);
-        auto batched = w.keep(ops::clone(mtp->step(predictor, rows(w, w.raw, 0, tokens), next, {}, traced).sample_hidden));
+        auto batched = w.keep(::tyloi::ops::clone(mtp->step(predictor, rows(w, w.raw, 0, tokens), next, {}, traced).sample_hidden));
         program.drain(); mtp->reset(predictor, 1);
         traced.trace = tokens == 2 ? &w.serial_stages : nullptr;
         std::vector<Tensor> serial;
@@ -214,11 +213,11 @@ int run_qwen35_mtp_check(Program& program) {
         if (tokens == 2) {
             require(w.serial_stages.size() == 2 * w.verify_stages.size(), "MTP predictor diagnostic stage count mismatch");
             for (std::size_t i = 0; i < w.verify_stages.size(); ++i) {
-                auto expected = w.keep(ops::cat(std::vector<Tensor>{w.serial_stages[i].second, w.serial_stages[i + w.verify_stages.size()].second}, 1));
+                auto expected = w.keep(::tyloi::ops::cat(std::vector<Tensor>{w.serial_stages[i].second, w.serial_stages[i + w.verify_stages.size()].second}, 1));
                 compare(w.verify_stages[i].second, expected, std::numeric_limits<double>::infinity(), "predictor_stage_" + w.verify_stages[i].first, mismatch);
             }
         }
-        compare(batched, w.keep(ops::cat(serial, 1)), .005, "predictor_batched_vs_serial", mismatch);
+        compare(batched, w.keep(::tyloi::ops::cat(serial, 1)), .005, "predictor_batched_vs_serial", mismatch);
     }
     require(!mismatch, "MTP predictor gate numerical mismatch");
     w.retire();
@@ -252,8 +251,8 @@ int run_qwen35_mtp_check(Program& program) {
         w.retire(); state.reset(1); auto current = ids(prompt_ids); std::vector<std::int64_t> expected;
         for (int i = 0; i < 32; ++i) {
             auto scores = logits(current, false);
-            auto next = w.keep(ops::sample_greedy(w.keep(ops::reshape(w.keep(ops::contiguous(scores)), {scores.size(0), -1}))));
-            expected.push_back(ops::item(next)); current = w.keep(ops::reshape(next, {1,1}));
+            auto next = w.keep(::tyloi::ops::sample_greedy(w.keep(::tyloi::ops::reshape(w.keep(::tyloi::ops::contiguous(scores)), {scores.size(0), -1}))));
+            expected.push_back(::tyloi::ops::item(next)); current = w.keep(::tyloi::ops::reshape(next, {1,1}));
         }
         auto got = generate(prompt_ids, params, 0); auto stats = program.stats(); total_cycles += stats.cycles;
         std::cout << "mtp_check greedy_prompt_tokens=" << prompt_ids.size() << " produced=" << got.size()

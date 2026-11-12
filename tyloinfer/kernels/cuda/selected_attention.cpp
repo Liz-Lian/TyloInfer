@@ -54,7 +54,7 @@ Tensor mma_attention(const Tensor& q, const Tensor& k, const Tensor& v,
     }
     const auto selected = causal ? ((columns + 31) / 32) * 32 : indices.size(2);
     TORCH_CHECK(selected > 0 && selected <= INT_MAX, "invalid attention selection");
-    auto plan = mma::plan(int(B), int(M), int(H), int(k.size(1)), int(k.size(2)), int(selected), int(D), hot.mapping != nullptr);
+    auto plan = mma::plan(int(B), int(M), int(H), int(k.size(1)), int(k.size(2)), int(selected), int(D), int(D), hot.mapping != nullptr);
     auto partial = torch::empty({B, M, H, D}, q.options().dtype(at::kFloat));
     auto metadata = torch::empty({int64_t(plan.workspace_bytes / sizeof(float))}, q.options().dtype(at::kFloat));
     const int64_t strides[4]{q.stride(0), q.stride(1), q.stride(2), q.stride(3)};

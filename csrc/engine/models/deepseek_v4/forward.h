@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/executor/executor.h"
+#include "engine/models/common/attention.h"
 #include "engine/models/deepseek_v4/model.h"
 #include "engine/models/deepseek_v4/state.h"
 #include "engine/models/input.h"

@@ -11,19 +11,19 @@
 #include <mma.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
 #include <vector>
 
-#include "mfq_sparse_attn_mma_f16.cuh"
+#include "sparse_mma_raw.h"
 
 namespace {
 
 constexpr int kHeadDim = 512;
 constexpr int kHeads = 64;
-constexpr int kHeadsPerTile = 16;
 constexpr int kIndexerDim = 128;
 constexpr int kIndexerKeysPerTile = 64;
 constexpr int kIndexerTopK = 512;
@@ -1359,9 +1359,30 @@ std::vector<::tyloi::DenseTensor> dsv4_build_decode_plan_cuda(
             mask.sizes() == indices.sizes() &&
             sinks.numel() == kHeads,
         "dsv4_sparse_attention: shape mismatch");
-    auto cache = kv.unsqueeze(1);
-    return mfq_sparse_attn_mma::launch<
-        kHeadDim, kHeadDim, 1, kHeadsPerTile, true>(
-        q, cache, cache, indices, mask, sinks, meta, scale,
-        "dsv4_sparse_attention");
+    TYLOINFER_RUNTIME_CHECK(
+        q.size(0) <= INT_MAX && q.size(2) <= INT_MAX &&
+            kv.size(1) <= INT_MAX && indices.size(2) <= INT_MAX,
+        "dsv4_sparse_attention: attention dimensions exceed 32-bit indexing");
+    TYLOINFER_RUNTIME_CHECK(
+        kv.device() == q.device() && indices.device() == q.device() &&
+            mask.device() == q.device() && sinks.device() == q.device() &&
+            meta.device() == q.device(),
+        "dsv4_sparse_attention: tensors must share one CUDA device");
+    const MfqCudaGuard guard(q.device());
+    namespace mma = tyloi::cuda::sparse_mma_raw;
+    const int batch = static_cast<int>(q.size(0));
+    const int tokens = static_cast<int>(q.size(2));
+    const auto plan = mma::plan(batch, tokens, kHeads, 1,
+        static_cast<int>(kv.size(1)), static_cast<int>(indices.size(2)), kHeadDim, kHeadDim, false);
+    TYLOINFER_RUNTIME_CHECK(
+        static_cast<size_t>(meta.numel()) >= plan.workspace_bytes / sizeof(float),
+        "dsv4_sparse_attention: meta workspace too small");
+    auto output = ::tyloi::cuda::empty(
+        {batch, tokens, kHeads, kHeadDim}, q.options().dtype(::tyloi::kFloat32));
+    const int64_t strides[] = {q.stride(0), q.stride(1), q.stride(2), q.stride(3)};
+    mma::launch(plan, q.data_ptr(), kv.data_ptr(), kv.data_ptr(), indices.data_ptr<int32_t>(),
+        mask.data_ptr(), sinks.data_ptr<float>(), nullptr, strides, false, true, false, 0, {},
+        static_cast<float>(scale), output.data_ptr<float>(), meta.data_ptr(),
+        static_cast<size_t>(meta.numel()) * sizeof(float), false, mfq_current_cuda_stream());
+    return output;
 }

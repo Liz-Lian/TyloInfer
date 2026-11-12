@@ -193,7 +193,7 @@ int run_qwen4_generation_variants(Program& program,const std::vector<std::int64_
     }
     if(batch2) {
         std::array<std::vector<std::int64_t>,2> batch_expected;
-        const auto prompt_ids=ops::reshape(ops::tensor(prompt,program.executor().device()),{1,-1});
+        const auto prompt_ids=::tyloi::ops::reshape(::tyloi::ops::tensor(prompt,program.executor().device()),{1,-1});
         for(std::size_t index=0;index<variant_count;++index) {
             const auto& variant=active[index];
             compact.set(variant.compact);aligned.set(variant.aligned);up.set(variant.up);capacity.set(variant.capacity);
@@ -211,22 +211,22 @@ int run_qwen4_generation_variants(Program& program,const std::vector<std::int64_
                 for(int row=0;row<2;++row) {
                     states[row]=&driver.add(prompt.size());
                     auto hidden=work.keep(driver.prefill(*states[row],prompt_ids));
-                    auto last=work.keep(ops::select(hidden,1,-1));
+                    auto last=work.keep(::tyloi::ops::select(hidden,1,-1));
                     auto logits=work.keep(program.model().logits(last,false));
-                    auto sampled=work.keep(ops::argmax(logits,-1));
-                    next.push_back(ops::item(sampled));generated[row].push_back(next.back());
+                    auto sampled=work.keep(::tyloi::ops::argmax(logits,-1));
+                    next.push_back(::tyloi::ops::item(sampled));generated[row].push_back(next.back());
                 }
                 TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream()));
                 const auto started=std::chrono::steady_clock::now();
                 for(int step=1;step<512;++step) {
                     BatchStep step_owner{program};
-                    auto host=step_owner.keep(ops::reshape(step_owner.keep(ops::tensor(next,Device(kCPU))),{2,1}));
-                    auto ids=step_owner.keep(ops::copy(host,program.executor().device()));
+                    auto host=step_owner.keep(::tyloi::ops::reshape(step_owner.keep(::tyloi::ops::tensor(next,Device(kCPU))),{2,1}));
+                    auto ids=step_owner.keep(::tyloi::ops::copy(host,program.executor().device()));
                     std::vector<models::BatchRow> rows;
                     for(int row=0;row<2;++row)rows.push_back({states[row],next[row],states[row]->position(),512-step,true,true});
                     auto result=driver.capture(rows,ids,host,true);
                     if(!result)throw std::runtime_error("short-batch variant must use a CUDA graph");
-                    next=ops::integers(step_owner.keep(*result));
+                    next=::tyloi::ops::integers(step_owner.keep(*result));
                     if(next.size()!=2)throw std::runtime_error("short-batch graph returned invalid output");
                     for(int row=0;row<2;++row)generated[row].push_back(next[row]);
                 }

@@ -27,7 +27,6 @@
 
 namespace tyloi::cuda::diagnostics {
 namespace {
-namespace ops = ::tyloi::ops;
 
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 
@@ -40,9 +39,9 @@ struct Work {
     Tensor keep(Tensor value) { tensors.push_back(value); return value; }
     Tensor ids(std::vector<std::int64_t> value) {
         values.push_back(std::move(value));
-        return keep(ops::reshape(keep(ops::tensor(values.back(), program.executor().device())), {1, -1}));
+        return keep(::tyloi::ops::reshape(keep(::tyloi::ops::tensor(values.back(), program.executor().device())), {1, -1}));
     }
-    Tensor host(const Tensor& value) { return keep(ops::contiguous(keep(ops::copy(value, Device(kCPU))))); }
+    Tensor host(const Tensor& value) { return keep(::tyloi::ops::contiguous(keep(::tyloi::ops::copy(value, Device(kCPU))))); }
     void clear() { program.drain(); tensors.clear(); values.clear(); }
 };
 
@@ -126,15 +125,15 @@ int run_qwen4_decode_hidden_check(Program& program) {
     c.state.reset(1); (void)w.keep(c.forward(prompt));
     for (int step=0; step<20; ++step) {
         Tensor raw; auto hidden=w.keep(c.forward(ids_for(step), &raw)); w.keep(raw);
-        reference_hidden.push_back(w.host(ops::cast(hidden, kFloat32)));
-        reference_raw.push_back(w.host(ops::cast(raw, kFloat32)));
+        reference_hidden.push_back(w.host(::tyloi::ops::cast(hidden, kFloat32)));
+        reference_raw.push_back(w.host(::tyloi::ops::cast(raw, kFloat32)));
         w.clear();
     }
     double maximum_error=0;
     const auto compare = [&](const Tensor& value, const Tensor& reference) {
         require(value.dim()==reference.dim(), "hidden graph shape mismatch");
         for (std::int64_t i=0; i<value.dim(); ++i) require(value.size(i)==reference.size(i), "hidden graph shape mismatch");
-        const auto a=ops::floats(value), b=ops::floats(reference);
+        const auto a=::tyloi::ops::floats(value), b=::tyloi::ops::floats(reference);
         for (std::size_t i=0; i<a.size(); ++i) {
             const double error=std::abs(double(a[i])-b[i]); maximum_error=std::max(maximum_error,error);
             require(std::isfinite(a[i]) && error<=.015+.015*std::abs(b[i]), "hidden graph differs from eager execution");
@@ -171,15 +170,15 @@ int run_qwen4_decode_hidden_check(Program& program) {
         program.drain(); c.state.reset(1); (void)w.keep(c.forward(prompt));
         for (int accepted : actions) {
             Tensor raw; auto hidden=w.keep(c.forward(input,&raw,1)); w.keep(raw);
-            expected.push_back(w.host(ops::cast(hidden,kFloat32))); expected_raw.push_back(w.host(ops::cast(raw,kFloat32)));
+            expected.push_back(w.host(::tyloi::ops::cast(hidden,kFloat32))); expected_raw.push_back(w.host(::tyloi::ops::cast(raw,kFloat32)));
             require(!c.decode(ids_for(0)), "hidden graph accepted an active speculative transaction");
             if (accepted<0) c.state.commit_speculative();
             else if (c.state.retains_partial_prefix(accepted)) c.state.rollback_speculative(accepted);
             else {
                 c.state.rollback_speculative(0);
-                if (accepted) (void)w.keep(c.forward(w.keep(ops::slice(input,1,1,accepted+1))));
+                if (accepted) (void)w.keep(c.forward(w.keep(::tyloi::ops::slice(input,1,1,accepted+1))));
             }
-            expected_next.push_back(w.host(ops::cast(w.keep(c.forward(ids_for(0))),kFloat32)));
+            expected_next.push_back(w.host(::tyloi::ops::cast(w.keep(c.forward(ids_for(0))),kFloat32)));
             w.clear();
         }
         program.drain(); c.state.reset(1); (void)w.keep(c.forward(prompt));
@@ -193,7 +192,7 @@ int run_qwen4_decode_hidden_check(Program& program) {
             compare(decoded->hidden,expected[i]); compare(raw,expected_raw[i]);
             if (project) {
                 auto logits=w.keep(c.model.logits(decoded->hidden)); compare(decoded->logits,logits);
-                auto values_cpu=ops::floats(decoded->logits);
+                auto values_cpu=::tyloi::ops::floats(decoded->logits);
                 const auto width=decoded->logits.size(decoded->logits.dim()-1);
                 require(decoded->tokens.size()==static_cast<std::size_t>(tokens), "graph greedy row count changed");
                 for (int row=0;row<tokens;++row) {
@@ -259,7 +258,7 @@ int variant_profile(Program& program, const std::vector<std::int64_t>& prompt_id
         }
         auto raw_host=w.host(raw), logits_host=w.host(logits);
         const auto index=tokens-2;
-        if(arm==0) { expected_raw[index]=ops::clone(raw_host); expected_logits[index]=ops::clone(logits_host); }
+        if(arm==0) { expected_raw[index]=::tyloi::ops::clone(raw_host); expected_logits[index]=::tyloi::ops::clone(logits_host); }
         else require(bits(raw_host,expected_raw[index]) && bits(logits_host,expected_logits[index]), "MTP variant changed raw hidden or target logits");
         std::cout << "mtp_verify_variant name=" << variant.name << " tokens=" << tokens
             << " repeats=7 wall_avg_ms=" << elapsed/7 << " exact=1\n";
