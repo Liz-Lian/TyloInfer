@@ -396,12 +396,12 @@ GatedResidual::Result GatedResidual::pre_after(const DenseTensor& input,
 GatedResidual::Result GatedResidual::prepare(
         const DenseTensor& input, const DenseTensor& prepared_norm, const GatedResidualMarker& marker) const {
 #ifdef TYLOINFER_NATIVE_CUDA
-    TYLOINFER_RUNTIME_CHECK(input.dim() >= 1 && hidden > 0 && streams > 0 &&
-        input.size(-1) / streams == hidden && input.size(-1) % streams == 0 && initialized_ && down && up,
+    const bool available = initialized_;
 #else
-    TYLOINFER_RUNTIME_CHECK(input.dim() >= 1 && hidden > 0 && streams > 0 &&
-        input.size(-1) / streams == hidden && input.size(-1) % streams == 0 && options_ && down && up,
+    const bool available = bool(options_);
 #endif
+    TYLOINFER_RUNTIME_CHECK(input.dim() >= 1 && hidden > 0 && streams > 0 &&
+        input.size(-1) / streams == hidden && input.size(-1) % streams == 0 && available && down && up,
         "gated-residual projection input dimensions disagree");
 #ifdef TYLOINFER_NATIVE_CUDA
     const auto& options=Executor::current().options().residual;

@@ -174,10 +174,11 @@ tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(
             images.store(key,visual);
         }
 #ifdef TYLOINFER_NATIVE_CUDA
-        TYLOINFER_RUNTIME_CHECK(visual && visual.dim()==2 && visual.size(0)==span.rows*span.columns && visual.size(1)==config_.hidden,
+        const bool aligned=visual && visual.dim()==2 && visual.size(0)==span.rows*span.columns && visual.size(1)==config_.hidden;
 #else
-        TYLOINFER_RUNTIME_CHECK(visual.dim()==2 && visual.size(0)==span.rows*span.columns && visual.size(1)==config_.hidden,
+        const bool aligned=visual.dim()==2 && visual.size(0)==span.rows*span.columns && visual.size(1)==config_.hidden;
 #endif
+        TYLOINFER_RUNTIME_CHECK(aligned,
                           "DeepSeek-V4.1 aligned image shape mismatch");
 #ifdef TYLOINFER_NATIVE_CUDA
         const auto host=weights_.for_layer(weights_.placement.device,true);

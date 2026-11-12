@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #else

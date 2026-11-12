@@ -18,6 +18,7 @@
 #include "engine/models/deepseek_v41/causal_lm.h"
 
 #include "engine/models/metadata.h"
+#include "engine/models/source.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
@@ -1118,15 +1119,16 @@ struct Block final {
         TYLOINFER_RUNTIME_CHECK(confirmed_prefix == 0 || supports_speculation(),
                               "block does not support speculative verification");
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& layer_position = layer_state.attention.position;
+#else
+        const auto& layer_position = layer_state.position;
+#endif
         TYLOINFER_RUNTIME_CHECK(layer_state.current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
                               positions.dim() == 1 && positions.numel() == hidden.size(1) &&
                               !cache_positions.has_value() &&
-#ifdef TYLOINFER_NATIVE_CUDA
-                              layer_state.attention.position == cache_position,
-#else
-                              layer_state.position == cache_position,
-#endif
+                              layer_position == cache_position,
                           "DeepSeek-V4.1 block input/cache mismatch");
 #ifdef TYLOINFER_NATIVE_CUDA
         const auto& ids = layer_state.current_ids.dense();

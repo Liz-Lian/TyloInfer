@@ -79,8 +79,9 @@ void check_projection(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor&
 
 void check_device(const ::tyloi::DenseTensor& weight, const ::tyloi::DenseTensor& input);
 void check_device(const ::tyloi::TensorImpl& weight, const ::tyloi::DenseTensor& input);
+/** Check device placement for every buffer of a populated weight. */
 inline void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input) {
-    check_device(weight.implementation(), input);
+    if (const auto& impl = weight.implementation()) check_device(*impl, input);
 }
 
 tyloi::weights::Placement projection_placement(const ::tyloi::Tensor& weight, std::size_t index = 0);
@@ -88,8 +89,9 @@ tyloi::weights::Placement projection_placement(const ::tyloi::Tensor& weight, st
 // Where a weight's buffers actually live, matched against the running device.
 // Every buffer of a representation is defined and resident on `device`.
 void check_fields(const ::tyloi::TensorImpl& weight, ::tyloi::Device device, bool check_device = true);
+/** Check the existing weight fields against the requested placement. */
 inline void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true) {
-    check_fields(weight.implementation(), device, check_device);
+    if (const auto& impl = weight.implementation()) check_fields(*impl, device, check_device);
 }
 
 bool tensor_parallel_output_projections_compatible(

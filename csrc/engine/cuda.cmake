@@ -127,6 +127,8 @@ target_link_libraries(mfq-cuda-engine PRIVATE
     mfq-cuda-native-kernels
     mfq-cuda-storage
 )
+# Engine's public request and result types use the generic engine and tokenizer headers.
+target_link_libraries(mfq-cuda-engine PUBLIC mfq-engine)
 target_compile_definitions(mfq-cuda-engine PUBLIC TYLOINFER_NATIVE_CUDA=1)
 target_compile_definitions(mfq-cuda-engine PRIVATE NOMINMAX)
 if(MSVC)

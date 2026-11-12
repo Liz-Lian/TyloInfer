@@ -353,7 +353,7 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
     require_forward(state.speculative_start >= 0 && accepted >= 0,
                     "no speculative transaction");
     try {
-        const auto keep = state.rewind(accepted);
+        const auto keep = state.rewind_suffix(accepted);
         for (std::size_t index = 0; index < state.layers.size(); ++index) {
             auto* linear = std::get_if<LinearState>(&state.layers[index]);
             if (linear == nullptr) continue;

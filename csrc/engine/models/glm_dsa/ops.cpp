@@ -1,9 +1,8 @@
 #include "engine/models/session/snapshot.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/check.h"
 #include "engine/weights/loader.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/projection/projection.h"
-#endif
 #include "engine/models/glm_dsa/snapshot.h"
 #include "engine/models/glm_dsa/model.h"
 #include "engine/models/glm_dsa/state.h"
@@ -757,9 +756,9 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     const auto input_proj = make_quant_group(layer.input_proj, true, false);
     const auto q_proj = make_quant_group(layer.q_proj, true, false);
 #endif
-    const auto& embed_q = *layer.embed_q;
-    const auto& unembed_out = *layer.unembed_out;
-    const auto& o_proj = *layer.o_proj;
+    const auto& embed_q = layer.embed_q;
+    const auto& unembed_out = layer.unembed_out;
+    const auto& o_proj = layer.o_proj;
     const auto& ffn = layer.ffn;
     const bool full_indexer = layer.full_indexer;
     auto& kv_cache = state.kv_cache;

@@ -12,9 +12,7 @@
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/projection/projection.h"
-#endif
 
 #include <algorithm>
 #include <array>
@@ -875,8 +873,8 @@ struct Linear::Impl {
         core.a_log=std::move(w.a_log); core.linear_norm=std::move(w.linear_norm);
         core.in_proj=std::move(w.in_proj); core.qkv_proj=std::move(w.qkv_proj);
         core.ab_nint_proj=std::move(w.ab_nint_proj); core.z_proj=std::move(w.z_proj);
-        if (!w.ab_proj.empty()) core.ab_proj=make_dense_group(w.ab_proj);
-        if (!w.zab_proj.empty()) core.zab_proj=make_dense_group(w.zab_proj);
+        if (!w.ab_proj.empty()) core.ab_proj=tyloi::cuda::make_dense_group(w.ab_proj);
+        if (!w.zab_proj.empty()) core.zab_proj=tyloi::cuda::make_dense_group(w.zab_proj);
         core.out_proj=std::move(w.out_proj); core.out_proj_dense=std::move(w.out_proj_dense);
     }
 };

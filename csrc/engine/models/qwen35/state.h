@@ -107,7 +107,7 @@ public:
     /** Commit a completed speculative verification window. */
     void commit_speculative();
     /** Rewind recurrent checkpoints to the accepted verification position. */
-    std::int64_t rewind(std::int64_t accepted_suffix);
+    std::int64_t rewind_suffix(std::int64_t accepted_suffix);
     /** Abort a pending verification and restore its starting position. */
     void abort_speculative() noexcept;
 

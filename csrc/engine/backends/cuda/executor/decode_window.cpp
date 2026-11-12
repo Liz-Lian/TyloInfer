@@ -420,12 +420,13 @@ void DecodeWindow::validate_residual_trace() const {
 #endif
 void DecodeWindow::observe_layers() {
     if(profile_clock_ && !layer_points_.empty()) {
-        TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(profile_clock_->host.data(),profile_clock_->device,
 #ifdef TYLOINFER_NATIVE_CUDA
-            next_profile_slot_*sizeof(uint64_t),cudaMemcpyDeviceToHost,stream_));
+        const auto profile_bytes=next_profile_slot_*sizeof(uint64_t);
 #else
-            layer_points_.size()*sizeof(uint64_t),cudaMemcpyDeviceToHost,stream_));
+        const auto profile_bytes=layer_points_.size()*sizeof(uint64_t);
 #endif
+        TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(profile_clock_->host.data(),profile_clock_->device,
+            profile_bytes,cudaMemcpyDeviceToHost,stream_));
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream_));
         // A bad diagnostic sample must not cancel an otherwise completed
         // decode, or partly increment the phase totals for this replay.

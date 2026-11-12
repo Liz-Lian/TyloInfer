@@ -738,12 +738,13 @@ MtpSessionState Predictor::capture_session_state(const tyloi::models::MtpState& 
     const auto& request=this->state<PredictorState>(value);
     const auto& hidden=input_hidden.dense();
     const auto position=target_position-1;
-    TYLOINFER_RUNTIME_CHECK(
 #ifdef TYLOINFER_NATIVE_CUDA
-        supports_session_state(value) &&
+    const bool session_supported = supports_session_state(value);
 #else
-        supports_session_state() &&
+    const bool session_supported = supports_session_state();
 #endif
+    TYLOINFER_RUNTIME_CHECK(
+        session_supported &&
         position>0 && position<=request.position() &&
         hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm.numel(),
         "Qwen4 MTP session boundary is unavailable");
@@ -3094,12 +3095,15 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #endif
     using DenseTensor=::tyloi::DenseTensor;
     auto ids = ids_handle.dense();
-    TYLOINFER_RUNTIME_CHECK(ids.dim()==2 && ids.size(0)==1 &&
+    bool eligible = false;
+    if (ids.dim()==2 && ids.size(0)==1) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        layer_prefill(model,state,prefill,ids.size(1)),
+        eligible = layer_prefill(model,state,prefill,ids.size(1));
 #else
-        qwen4_layer_major_prefill_eligible(model,state,ids.size(1)),
+        eligible = qwen4_layer_major_prefill_eligible(model,state,ids.size(1));
 #endif
+    }
+    TYLOINFER_RUNTIME_CHECK(eligible,
         "layer-major prefill requires a bounded single-device Qwen4 chunk and whole-layer cache");
     TYLOINFER_RUNTIME_CHECK(compute_chunk>8,"layer-major compute chunk must exceed decode width");
 #ifndef TYLOINFER_NATIVE_CUDA

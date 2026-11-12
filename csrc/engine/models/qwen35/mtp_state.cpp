@@ -2,6 +2,7 @@
 #include "engine/models/session/snapshot.h"
 #include "engine/ops.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include <algorithm>
 #include <limits>

@@ -15,6 +15,7 @@
 #include "engine/models/source/model_graph.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/weights/quant.h"
 #include "engine/weights/source/read.h"
 
@@ -490,15 +491,9 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
     model.fusion = loader.linear("predictor.fusion.weight");
     TYLOINFER_RUNTIME_CHECK(model.fusion.size(1) == 2 * config.hidden_size &&
         model.fusion.size(0) == config.hidden_size &&
-#ifdef TYLOINFER_NATIVE_CUDA
         model.hidden_norm.numel() == config.hidden_size &&
         model.embedding_norm.numel() == config.hidden_size &&
         model.output_norm.numel() == config.hidden_size,
-#else
-        model.hidden_norm.numel() == config.hidden_size &&
-        model.embedding_norm.numel() == config.hidden_size &&
-        model.output_norm.numel() == config.hidden_size,
-#endif
         "Qwen MTP component dimensions disagree with the backbone");
     model.layers.reserve(config.mtp_num_hidden_layers);
     for (int index = 0; index < config.mtp_num_hidden_layers; ++index) {

@@ -1183,10 +1183,11 @@ class Ple {
         TYLOINFER_RUNTIME_CHECK(convolution.defined(),"missing Qwen4 PLE session state");
         if(retain_storage) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            TYLOINFER_RUNTIME_CHECK(state.conv.defined() && state.conv.dense().sizes()==convolution.sizes(),
+            const bool matching_conv=state.conv.defined() && state.conv.dense().sizes()==convolution.sizes();
 #else
-            TYLOINFER_RUNTIME_CHECK(state.conv.defined() && state.conv.sizes()==convolution.sizes(),
+            const bool matching_conv=state.conv.defined() && state.conv.sizes()==convolution.sizes();
 #endif
+            TYLOINFER_RUNTIME_CHECK(matching_conv,
                 "Qwen4 PLE graph session geometry changed");
             commit(state);
 #ifdef TYLOINFER_NATIVE_CUDA

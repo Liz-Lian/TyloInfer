@@ -1,5 +1,6 @@
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/deepseek_v41/load.h"
+#include "engine/models/deepseek_v41/vision.h"
 
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/generation/sequence.h"
+#include "engine/models/common/check.h"
 #include "engine/ops.h"
 #include "grid_vision.h"
 #include <cmath>

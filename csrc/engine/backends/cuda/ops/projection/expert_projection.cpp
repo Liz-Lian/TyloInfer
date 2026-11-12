@@ -221,8 +221,7 @@ tyloi::Tensor tyloi::ops::experts(const Tensor& input, const Tensor& ids, const 
     validate_expert_inputs(input, ids, weights, gate_up, down, width);
     auto& executor = cuda::Executor::current();
     const auto project = executor.projector(cuda::Executor::current_ffn());
-    auto banks = tq_banks(gate_up.empty() ? nullptr : gate_up.front(),
-                          gate_up.empty() ? nullptr : gate_up.back(), down);
+    auto banks = tq_banks(gate_up.front(), gate_up.back(), down);
     if (banks.gate || banks.up || banks.down) {
         TYLOINFER_RUNTIME_CHECK(gate_up.size() == 2 && down && banks.gate && banks.up && banks.down,
                                 "TQ MoE requires separate Gate, Up and Down banks");

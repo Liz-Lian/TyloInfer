@@ -5,6 +5,7 @@
 #include "engine/ops.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/check.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/weights/loader.h"

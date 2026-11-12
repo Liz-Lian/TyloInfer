@@ -236,7 +236,7 @@ void State::commit_speculative() {
     speculative_confirmed = 0;
 }
 
-std::int64_t State::rewind(std::int64_t accepted_suffix) {
+std::int64_t State::rewind_suffix(std::int64_t accepted_suffix) {
     require_state(speculative_start >= 0 && accepted_suffix >= 0,
                   "no speculative transaction");
     const auto keep = speculative_start + speculative_confirmed + accepted_suffix;
@@ -600,7 +600,7 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
 void State::rollback_speculative(std::int64_t accepted) {
     require_state(speculative_start >= 0 && accepted >= 0, "no speculative transaction");
     try {
-        const auto keep = rewind(accepted);
+        const auto keep = rewind_suffix(accepted);
         for (std::size_t index = 0; index < layers.size(); ++index) {
             auto* linear = std::get_if<LinearState>(&layers[index]);
             if (!linear) continue;

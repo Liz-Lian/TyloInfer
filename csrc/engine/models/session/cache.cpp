@@ -2,6 +2,7 @@
 #include <cstring>
 
 #include "engine/backends/cpu/native/host_memory.h"
+#include "engine/config.h"
 #include "engine/models/session/codec.h"
 #include "engine/state/session/prefix_cache.h"
 #include "engine/state/session/paged.h"
