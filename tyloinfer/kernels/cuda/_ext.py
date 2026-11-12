@@ -77,6 +77,13 @@ _SOURCES = [
     os.path.join(_DIR, "glm5_next.cpp"),
     os.path.join(_DIR, "attention.cpp"),
     os.path.join(_DIR, "gated_delta_net.cpp"),
+    os.path.join(_DIR, "nepq.cpp"),
+    os.path.join(_DIR, "nepq_residual.cpp"),
+    os.path.join(_DIR, "nepq_residual_backward.cu"),
+    os.path.join(_DIR, "fp8_sq.cpp"),
+    os.path.join(_DIR, "fp8_sq_backward.cu"),
+    os.path.join(_DIR, "mxfp4_sq.cpp"),
+    os.path.join(_DIR, "mxfp4_sq_backward.cu"),
     os.path.join(_CUDA_NATIVE_INCLUDE, "env.cpp"),
 ]
 _module = None

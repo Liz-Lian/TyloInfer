@@ -1,7 +1,7 @@
 
 
 #include <cuda.h>
-#include "backend.h"
+#include "nepq_raw.h"
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -99,84 +99,22 @@ __global__ void nepq_hadamard_adjoint_kernel(
 }  // namespace
 
 
-::tyloi::DenseTensor nepq_hadamard_input_cuda(
-    ::tyloi::DenseTensor input,
-    ::tyloi::DenseTensor signs,
-    int64_t block_size) {
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
-        input.is_contiguous() && input.dim() == 2,
-        "NEPQ Hadamard input must be CUDA contiguous fp16 rank-2");
-    TYLOINFER_RUNTIME_CHECK(
-        signs.is_cuda() && signs.scalar_type() == ::tyloi::kInt8 &&
-        signs.is_contiguous() && signs.dim() == 1,
-        "NEPQ Hadamard signs must be CUDA contiguous int8 rank-1");
-    TYLOINFER_RUNTIME_CHECK(
-        block_size >= 2 && block_size <= 2048 &&
-        (block_size & (block_size - 1)) == 0,
-        "NEPQ Hadamard block must be a power of two in [2,2048]");
-    const int rows = static_cast<int>(input.size(0));
-    const int width = static_cast<int>(input.size(1));
-    TYLOINFER_RUNTIME_CHECK(signs.numel() == width, "NEPQ Hadamard sign width mismatch");
-    TYLOINFER_RUNTIME_CHECK(width % block_size == 0, "NEPQ Hadamard block must divide K");
-    MfqCudaGuard guard(input.device());
-    auto output = ::tyloi::cuda::empty_like(input);
-    cudaStream_t stream = mfq_current_cuda_stream();
-    nepq_hadamard_input_kernel<<<
-        dim3(width / block_size, rows),
-        256,
-        static_cast<size_t>(block_size) * sizeof(float),
-        stream>>>(
-        reinterpret_cast<const __half *>(input.data_ptr<mfq_half>()),
-        signs.data_ptr<int8_t>(),
-        reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
-        rows,
-        width,
-        static_cast<int>(block_size));
-    TYLOINFER_RUNTIME_CHECK(cudaGetLastError() == cudaSuccess,
-                "NEPQ Hadamard input kernel launch failed");
-    return output;
+namespace tyloi::cuda::nepq_raw {
+
+void input(const void* source, const int8_t* signs, void* output,
+           int rows, int width, int block_size, cudaStream_t stream) {
+    nepq_hadamard_input_kernel<<<dim3(width / block_size, rows), 256,
+        static_cast<size_t>(block_size) * sizeof(float), stream>>>(
+        static_cast<const __half*>(source), signs, static_cast<__half*>(output),
+        rows, width, block_size);
 }
 
-
-::tyloi::DenseTensor nepq_hadamard_adjoint_cuda(
-    ::tyloi::DenseTensor input,
-    ::tyloi::DenseTensor signs,
-    int64_t block_size) {
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
-        input.is_contiguous() && input.dim() == 2,
-        "NEPQ Hadamard adjoint input must be CUDA contiguous fp16 rank-2");
-    TYLOINFER_RUNTIME_CHECK(
-        signs.is_cuda() && signs.scalar_type() == ::tyloi::kInt8 &&
-        signs.is_contiguous() && signs.dim() == 1,
-        "NEPQ Hadamard adjoint signs must be CUDA contiguous int8 rank-1");
-    TYLOINFER_RUNTIME_CHECK(
-        block_size >= 2 && block_size <= 2048 &&
-        (block_size & (block_size - 1)) == 0,
-        "NEPQ Hadamard adjoint block must be a power of two in [2,2048]");
-    const int rows = static_cast<int>(input.size(0));
-    const int width = static_cast<int>(input.size(1));
-    TYLOINFER_RUNTIME_CHECK(
-        signs.numel() == width && width % block_size == 0,
-        "NEPQ Hadamard adjoint geometry mismatch");
-    TYLOINFER_RUNTIME_CHECK(
-        input.device() == signs.device(),
-        "NEPQ Hadamard adjoint tensors must share one CUDA device");
-    MfqCudaGuard guard(input.device());
-    auto output = ::tyloi::cuda::empty_like(input);
-    if (rows == 0) {
-        return output;
-    }
-    nepq_hadamard_adjoint_kernel<<<
-        dim3(width / block_size, rows),
-        256,
-        static_cast<size_t>(block_size) * sizeof(float),
-        mfq_current_cuda_stream()>>>(
-        reinterpret_cast<const __half *>(input.data_ptr<mfq_half>()),
-        signs.data_ptr<int8_t>(),
-        reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
-        rows, width, static_cast<int>(block_size));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
+void adjoint(const void* source, const int8_t* signs, void* output,
+             int rows, int width, int block_size, cudaStream_t stream) {
+    nepq_hadamard_adjoint_kernel<<<dim3(width / block_size, rows), 256,
+        static_cast<size_t>(block_size) * sizeof(float), stream>>>(
+        static_cast<const __half*>(source), signs, static_cast<__half*>(output),
+        rows, width, block_size);
 }
+
+}  // namespace tyloi::cuda::nepq_raw

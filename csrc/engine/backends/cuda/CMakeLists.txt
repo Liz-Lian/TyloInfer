@@ -140,6 +140,7 @@ add_library(mfq-cuda-native-kernels STATIC
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/glm5_next.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/wrappers.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/gdn_wrappers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nepq_wrappers.cpp
     ${TYLOINFER_CUDA_KERNEL_ROOT}/float_projection.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_quantization.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_hot_cache.cu
@@ -150,6 +151,9 @@ add_library(mfq-cuda-native-kernels STATIC
 add_library(mfq::cuda-native-kernels ALIAS mfq-cuda-native-kernels)
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     target_sources(mfq-cuda-native-kernels PRIVATE
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nepq_residual_wrappers.cpp
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/fp8_sq_wrappers.cpp
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mxfp4_sq_wrappers.cpp
         ${TYLOINFER_CUDA_KERNEL_ROOT}/gr_prefill_blas.cu
         ${TYLOINFER_CUDA_KERNEL_ROOT}/gated_residual_fused.cu
     )
