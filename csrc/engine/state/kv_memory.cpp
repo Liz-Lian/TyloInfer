@@ -6,9 +6,7 @@
 #include "engine/state/kv_budget.h"
 #include "engine/weights/cache.h"
 #include "engine/backends/cuda/executor/options.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
-#endif
 #include "context.h"
 #include "engine/backends/cuda/native/device.h"
 #include "resident_allocations.h"
@@ -205,7 +203,6 @@ void KvMemoryAllocation::ensure(int64_t tokens) {
     if(!expert_regions.empty())expert_regions.front().advance(tokens+pool-1);
     if (virtual_keys) {virtual_keys->ensure(tokens); virtual_values->ensure(tokens);}
 }
-#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t maximum, int64_t heads, int64_t kw, int64_t vw,
         int64_t iw, int64_t pool, const ::tyloi::TensorOptions& options, int64_t selected_columns) {
     auto& executor = Executor::current();
@@ -218,7 +215,6 @@ std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t maximum, int64_t heads, 
     result->options = options; result->offload = executor.offload_;
     return result;
 }
-#endif
 
 KvMemoryManager::KvMemoryManager(KvMemoryOptions options):options_(std::move(options)) {}
 void KvMemoryManager::bind_budget(tyloi::engine::Budget* budget) noexcept {
@@ -535,12 +531,8 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
         <<" ram_preallocated="<<options_.ram_preallocated<<" exclusive="<<exclusive<<"\n";
 }
 void KvMemoryManager::ensure(int64_t tokens) {
-#ifdef TYLOINFER_NATIVE_CUDA
     auto* owner = Executor::current().kv_.get();
     if (!owner) return;
-#else
-    auto* owner = this;
-#endif
     std::erase_if(owner->allocations_, [](const auto& allocation) { return allocation.expired(); });
     if(owner->lending_)owner->cache_->protect_kv(tokens);
     std::vector<std::pair<tyloi::Device, std::size_t>> growth;
@@ -556,7 +548,6 @@ void KvMemoryManager::ensure(int64_t tokens) {
         owner->budget_->reserve_kv(device,engine::prefill_budget_add(bytes,64ULL<<20));
     for(auto& weak:owner->allocations_)if(auto a=weak.lock())a->ensure(std::min(a->maximum,tokens));
 }
-#ifdef TYLOINFER_NATIVE_CUDA
 bool KvMemoryManager::graph_supported(bool independent) {
     const auto& executor = Executor::current();
     const auto* owner = executor.kv_.get();
@@ -572,7 +563,6 @@ bool KvMemoryManager::graph_supported(bool independent) {
     const auto* option = tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
     return !option || option[0] != '0';
 }
-#endif
 std::size_t KvMemoryManager::growth_reserve() const {
     std::size_t result=0;
     for(auto& weak:allocations_)if(auto a=weak.lock())result+=a->growth_bytes(a->maximum);

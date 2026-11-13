@@ -5,7 +5,6 @@
 #include <optional>
 #include <stdexcept>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 tyloi::DenseTensor tyloi::cuda::ops::rms_norm(tyloi::DenseTensor input, const tyloi::DenseTensor& weight,
                                      double eps, double offset, tyloi::ScalarType output_type) {
@@ -110,44 +109,29 @@ tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
     return gemma4_ffn_merge_f16_cuda(T(dense), T(experts), T(residual), T(dense_weight),
                                     T(expert_weight), T(output_weight), T(scale), eps);
 }
-#endif
 
 ::tyloi::DenseTensor qwen_rms_norm(::tyloi::DenseTensor x,
-#ifdef TYLOINFER_NATIVE_CUDA
                                          const ::tyloi::Tensor& weight_tensor, double eps,
-#else
-                                         ::tyloi::DenseTensor weight, double eps,
-#endif
                                          double weight_offset) {
     if (!x.is_cuda()) {
         auto xf = x.contiguous().to(::tyloi::kFloat32);
-#ifdef TYLOINFER_NATIVE_CUDA
         const auto& weight = weight_tensor.dense();
-#endif
         auto wf = weight.contiguous().to(::tyloi::kFloat32);
         if (weight_offset != 0.0)
             wf = wf + weight_offset;
         auto inverse = ::tyloi::cuda::rsqrt(xf.square().mean(-1, true) + eps);
         return (xf * inverse * wf).contiguous();
     }
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto& weight = weight_tensor.dense();
-#endif
     return rms_norm_offset_cuda(x, weight, eps, weight_offset);
 }
 
 ::tyloi::DenseTensor qwen_rms_norm_bf16(bool fused,
                                               ::tyloi::DenseTensor x,
-#ifdef TYLOINFER_NATIVE_CUDA
                                               const ::tyloi::Tensor& weight_tensor,
-#else
-                                              ::tyloi::DenseTensor weight,
-#endif
                                               double eps, double weight_offset) {
     auto input = x.contiguous().to(::tyloi::kBFloat16);
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto& weight = weight_tensor.dense();
-#endif
     if (input.is_cuda() && fused) {
         return qwen_rms_norm_bf16_cuda(input, weight.contiguous(), eps, weight_offset);
     }

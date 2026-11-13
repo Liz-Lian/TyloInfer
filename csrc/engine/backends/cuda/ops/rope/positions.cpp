@@ -1,6 +1,5 @@
 #include "engine/ops/positions.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/resident_allocations.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
@@ -70,4 +69,3 @@ std::array<Tensor, 2> position_axes(std::int64_t begin, std::int64_t count, std:
     return result;
 }
 } // namespace tyloi::ops
-#endif

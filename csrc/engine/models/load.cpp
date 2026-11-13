@@ -2,7 +2,6 @@
 
 #include "engine/models/causal_model.h"
 #include "engine/models/gemma4/load.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/deepseek_v4/load.h"
 #include "engine/models/glm5_next/load.h"
@@ -12,7 +11,6 @@
 #include "engine/models/qwen35/load.h"
 #include "engine/models/minicpmo45/model.h"
 #include "engine/models/minicpmo45/text/load.h"
-#endif
 #include "engine/models/source.h"
 #include "engine/models/source/model_graph.h"
 
@@ -173,11 +171,9 @@ Capabilities runtime_capabilities(
 bool supports(std::string_view implementation) {
     switch (backbone(implementation)) {
     case Backbone::gemma4: return true;
-#ifdef TYLOINFER_NATIVE_CUDA
     case Backbone::generic_qwen: case Backbone::glm_dsa: case Backbone::glm5_next:
     case Backbone::qwen4_exp: case Backbone::deepseek_v4: case Backbone::deepseek_v41:
     case Backbone::nemotron_h: case Backbone::minicpmo45: case Backbone::minicpmo_tts: return true;
-#endif
     default: return false;
     }
 }
@@ -198,7 +194,6 @@ void load(
         return ::tyloi::cuda::gemma4::load(
             owner, std::move(source), definition, options.context, weights, placement,
             options.gpu_layers, options.expert_parallel);
-#ifdef TYLOINFER_NATIVE_CUDA
     case Backbone::glm_dsa:
         return ::tyloi::cuda::glm_dsa::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::deepseek_v4:
@@ -217,7 +212,6 @@ void load(
         return ::tyloi::cuda::minicpmo45::text::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::minicpmo_tts:
         return ::tyloi::cuda::minicpmo45::load(owner, std::move(source), definition, weights, placement, options);
-#endif
     default:
         break;
     }

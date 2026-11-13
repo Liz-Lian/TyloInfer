@@ -3,9 +3,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/native/profile.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
-#endif
 
 #include <optional>
 #include <vector>
@@ -15,16 +13,10 @@ namespace {
 
 std::array<DenseTensor, 2> full_norm(
     CudaProfiler& profiler,
-#ifdef TYLOINFER_NATIVE_CUDA
     const ::tyloi::Tensor& norm,
-#else
-    const DenseTensor& ffn_norm,
-#endif
     double eps, double offset,
     bool bf16, bool fused_norm, bool fp32, DenseTensor residual, DenseTensor output) {
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto& ffn_norm = norm.dense();
-#endif
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     auto pair = profiler.measure("full.attn_residual_ffn_norm", [&] {
         auto rr = residual.reshape({-1, H});
@@ -74,16 +66,10 @@ std::array<DenseTensor, 2> full_norm(
 
 std::array<DenseTensor, 2> linear_norm(
     CudaProfiler& profiler,
-#ifdef TYLOINFER_NATIVE_CUDA
     const ::tyloi::Tensor& norm,
-#else
-    const DenseTensor& ffn_norm,
-#endif
     double eps, double offset,
     bool fp32, DenseTensor residual, DenseTensor output) {
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto& ffn_norm = norm.dense();
-#endif
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     if (!residual.is_cuda()) {
         auto sum = (residual.to(::tyloi::kFloat32) +
@@ -171,7 +157,6 @@ DenseTensor linear_add(CudaProfiler& profiler, bool fp32, DenseTensor residual, 
 } // namespace
 } // namespace tyloi::cuda
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 
 std::array<DenseTensor, 2> residual_norm(
@@ -215,4 +200,3 @@ DenseTensor recurrent_add(DenseTensor residual, DenseTensor value) {
 }
 
 } // namespace tyloi::cuda::ops
-#endif

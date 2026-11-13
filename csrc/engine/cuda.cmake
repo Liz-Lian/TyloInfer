@@ -78,8 +78,7 @@ endif()
 add_library(mfq-cuda-loading OBJECT ${TYLOINFER_CUDA_LOADING_SOURCES}
     ${PROJECT_SOURCE_DIR}/engine/weights/rows.cpp)
 mfq_configure_cuda_engine_target(mfq-cuda-loading)
-target_compile_definitions(mfq-cuda-loading PRIVATE
-    TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
+target_compile_definitions(mfq-cuda-loading PRIVATE NOMINMAX)
 set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}/models)
@@ -100,7 +99,6 @@ set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
     ${PROJECT_SOURCE_DIR}/engine/load.cpp
-    ${TYLOINFER_CUDA_MODEL_SOURCES}
 )
 add_library(mfq-cuda-engine STATIC
     ${PROJECT_SOURCE_DIR}/engine/program.cpp
@@ -129,7 +127,9 @@ target_link_libraries(mfq-cuda-engine PRIVATE
 )
 # Engine's public request and result types use the generic engine and tokenizer headers.
 target_link_libraries(mfq-cuda-engine PUBLIC mfq-engine)
-target_compile_definitions(mfq-cuda-engine PUBLIC TYLOINFER_NATIVE_CUDA=1)
+if(TARGET mfq-transport)
+    target_link_libraries(mfq-transport PUBLIC mfq-cuda-engine)
+endif()
 target_compile_definitions(mfq-cuda-engine PRIVATE NOMINMAX)
 if(MSVC)
     foreach(target mfq-cuda-ops mfq-cuda-execution mfq-cuda-loading mfq-cuda-models mfq-cuda-engine)
@@ -153,67 +153,6 @@ set_target_properties(mfq-cuda-engine PROPERTIES
 option(TYLOINFER_BUILD_CLI_TOOLS
     "Build the native CLI tools (mfq-runtime, mfq-diagnostics, mfq-eval)" OFF)
 if(TYLOINFER_BUILD_CLI_TOOLS)
-    option(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME
-        "Build the optional LibTorch CUDA runtime used only for A/B validation"
-        OFF)
-    if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
-        if(NOT TARGET mfq-transport)
-            message(FATAL_ERROR
-                "TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME requires TYLOINFER_BUILD_TRANSPORT=ON")
-        endif()
-        find_package(Python REQUIRED COMPONENTS Interpreter Development)
-        if(NOT TARGET CUDA::nvToolsExt)
-            find_library(NVTOOLSEXT_LIBRARY
-                NAMES nvToolsExt nvToolsExt64_1
-                PATHS "${CUDAToolkit_LIBRARY_DIR}" "$ENV{CUDA_PATH}/lib/x64"
-                NO_DEFAULT_PATH)
-            if(NVTOOLSEXT_LIBRARY)
-                add_library(CUDA::nvToolsExt UNKNOWN IMPORTED)
-                set_target_properties(CUDA::nvToolsExt PROPERTIES
-                    IMPORTED_LOCATION "${NVTOOLSEXT_LIBRARY}")
-            else()
-                add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
-            endif()
-        endif()
-        find_package(Torch REQUIRED)
-        add_library(mfq-cuda-torch-engine STATIC
-            ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/execution.cpp
-            ${PROJECT_SOURCE_DIR}/engine/scheduler/scheduler.cpp
-            ${PROJECT_SOURCE_DIR}/engine/models/qwen35/batch_ops.cpp
-            ${PROJECT_SOURCE_DIR}/engine/generation/cuda.cpp
-            ${PROJECT_SOURCE_DIR}/engine/generation/mtp/cuda.cpp
-            ${TYLOINFER_CUDA_OP_SOURCES}
-            ${TYLOINFER_CUDA_EXECUTION_SOURCES}
-            ${TYLOINFER_CUDA_LOADING_SOURCES}
-            ${TYLOINFER_CUDA_ENGINE_SOURCES}
-            ${TYLOINFER_MODELS_CUDA_SOURCES}
-            ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/ggml.cu
-            ${TYLOINFER_CUDA_KERNEL_SOURCES}
-        )
-        mfq_configure_cuda_engine_target(mfq-cuda-torch-engine)
-        target_link_libraries(mfq-cuda-torch-engine
-            PUBLIC ${TORCH_LIBRARIES} Python::Python
-            PRIVATE
-                CUDA::cuda_driver
-                CUDA::cudart
-                CUDA::cublas
-                mfq-cuda-storage
-        )
-        target_compile_definitions(mfq-cuda-torch-engine PRIVATE NOMINMAX)
-        target_compile_options(mfq-cuda-torch-engine PRIVATE
-            "$<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>"
-        )
-        set_target_properties(mfq-cuda-torch-engine PROPERTIES
-            CUDA_ARCHITECTURES "${TYLOINFER_CUDA_ARCHITECTURES}"
-            CUDA_RUNTIME_LIBRARY Shared
-            CUDA_STANDARD 20
-            CUDA_STANDARD_REQUIRED ON
-        )
-        mfq_add_transport(mfq-transport-torch mfq-cuda-torch-engine)
-    endif()
-    if(TARGET mfq-transport)
-        mfq_add_transport(mfq-transport-cuda mfq-cuda-engine)
-    endif()
     include(${PROJECT_SOURCE_DIR}/diagnostics/cuda.cmake)
     include(${PROJECT_SOURCE_DIR}/eval/cuda.cmake)
     include(${PROJECT_SOURCE_DIR}/apps/cuda.cmake)

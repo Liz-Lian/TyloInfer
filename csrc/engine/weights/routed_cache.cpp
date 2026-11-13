@@ -73,9 +73,7 @@ void Cache::Warmup::release(Device device, bool decode) {
 void Cache::begin_load() {
     reset();
     auto& executor = cuda::Executor::current();
-#ifdef TYLOINFER_NATIVE_CUDA
     executor.weights_ = this;
-#endif
     data_->exec = executor.tq();
     data_->host_bytes = cuda::env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
     data_->host_limit = cuda::env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);

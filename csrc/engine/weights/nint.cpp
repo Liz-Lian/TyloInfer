@@ -1,5 +1,4 @@
 #include "engine/weights/quant.h"
-#include "engine/weights/nint_cache.h"
 #include "engine/weights/format.h"
 
 #include <algorithm>
@@ -12,52 +11,6 @@
 
 using namespace tyloi::cuda::quant_format;
 
-#if TYLOINFER_ENABLE_MFQ_COMPAT && !defined(TYLOINFER_NATIVE_CUDA)
-struct NintCacheState {
-    using Key=std::array<uintptr_t,11>;
-    std::map<Key,::tyloi::DenseTensor> decoded;
-    NintCacheState* previous=nullptr;
-};
-namespace {
-thread_local NintCacheState* current_cache=nullptr;
-NintCacheState::Key cache_key(const tyloi::NintTensor& w) {
-    return {reinterpret_cast<uintptr_t>(w.q_packed.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.row_q_bits.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.row_q_bit_offsets.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.sub_scale.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.sub_min.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.neuron_scale.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.neuron_min.data_ptr()),
-        uintptr_t(w.neuron_len),uintptr_t(w.gs),uintptr_t(w.out),uintptr_t(w.q_packed.get_device())};
-}
-}
-NintCache::NintCache(bool enabled) {
-    if(!enabled)return;
-    state_=std::make_unique<NintCacheState>();
-    state_->previous=current_cache;
-    current_cache=state_.get();
-}
-NintCache::~NintCache() {
-    if(state_)current_cache=state_->previous;
-}
-void NintCache::clear() {
-    if(state_)state_->decoded.clear();
-}
-bool NintCache::active() noexcept {
-    return current_cache!=nullptr;
-}
-::tyloi::DenseTensor NintCache::get(
-        const tyloi::NintTensor& w,
-        const std::function<::tyloi::DenseTensor()>& decode) {
-    if(!current_cache)return decode();
-    const auto key=cache_key(w);
-    const auto found=current_cache->decoded.find(key);
-    if(found!=current_cache->decoded.end())return found->second;
-    auto dense=decode();
-    current_cache->decoded.emplace(key,dense);
-    return dense;
-}
-#endif
 
 static uint64_t nint_row_payload_bits(
         int ng, int gs, int bits) {

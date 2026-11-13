@@ -1,9 +1,7 @@
 #pragma once
 
 #include "engine/models/session/snapshot.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/state.h"
-#endif
 #include "engine/state/kv_view.h"
 
 #include <vector>
@@ -12,9 +10,7 @@ namespace tyloi::cuda::minicpmo45::text {
 struct Model;
 
 class State
-#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::models::State
-#endif
 {
 public:
     struct Restore {
@@ -26,7 +22,6 @@ public:
     State& operator=(const State&) = delete;
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Check request ownership against the supplied model. */
     bool belongs_to(const Model& model) const noexcept { return model_ == &model; }
     /** Reuse a completed prefix without copying or replacing its KV backing. */
@@ -38,7 +33,6 @@ public:
     std::vector<std::pair<tyloi::Device,std::size_t>> reset_growth(std::int64_t batch) const override;
     /** Prepare an independently owned session restore candidate. */
     std::unique_ptr<tyloi::models::Restore> prepare_restore(const TextSessionState&) override;
-#endif
 
     void preallocate();
     void reset(int64_t batch);
@@ -70,9 +64,7 @@ private:
         tyloi::state::KvQuantization quantization;
     };
     std::vector<Layout> layout_;
-#ifdef TYLOINFER_NATIVE_CUDA
     const Model* model_;
     int64_t maximum_;
-#endif
 };
 } // namespace tyloi::cuda::minicpmo45::text

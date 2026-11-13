@@ -1,8 +1,5 @@
 #include "engine/models/qwen4_exp/components.h"
 
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/backends/cuda/executor/execution.h"
-#endif
 #include "engine/models/source/model_config.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/qwen4_exp/predictor.h"
@@ -13,42 +10,15 @@
 
 namespace tyloi::cuda::qwen4_exp {
 
-#ifndef TYLOINFER_NATIVE_CUDA
-tyloi::engine::Metrics Components::profile_metrics(const Model& language, const State& state) const {
-    return qwen4_decode_graph_profile_metrics(language, state);
-}
-
-std::optional<tyloi::engine::Metrics> Components::memory_metrics(const Model& language, const State& state) const {
-    return qwen4_cache_memory_metrics(language, state, mtp.get());
-}
-#endif
 
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
-#ifdef TYLOINFER_NATIVE_CUDA
         const Model& language, tyloi::cache::Media& images,
-#else
-        Model& language, tyloi::cache::Media& images,
-#endif
-#ifndef TYLOINFER_NATIVE_CUDA
-        Projector projector, Collectives& collectives,
-#endif
         int primary,
-#ifndef TYLOINFER_NATIVE_CUDA
-        Executor* executor,
-#endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media)
-#ifdef TYLOINFER_NATIVE_CUDA
         const
-#endif
         {
     if (grid_vision) return grid_vision->prepare(language, images,
-#ifndef TYLOINFER_NATIVE_CUDA
-        projector, collectives,
-#endif
         primary,
-#ifndef TYLOINFER_NATIVE_CUDA
-        executor,
-#endif
         tokens, media);
     throw std::invalid_argument("model has no multimodal component");
 }
@@ -57,18 +27,12 @@ Components load_components(
         tyloi::cuda::qwen4_exp::Model& model,
         const tyloi::weights::Loader& weights,
         bool load_optional_components
-#ifdef TYLOINFER_NATIVE_CUDA
         , std::string_view definition, const tyloi::ops::YarnScaling& yarn
-#endif
         ) {
     Components result;
     if (!load_optional_components) return result;
     if (model.plan.vision == ::tyloi::models::Vision::grid_vit) {
-#ifdef TYLOINFER_NATIVE_CUDA
         const auto document = nlohmann::json::parse(definition.begin(), definition.end());
-#else
-        const auto document = nlohmann::json::parse(tyloi::models::config_json(*model.source));
-#endif
         const auto& vision = document.at("vision_config");
         if (vision.value("hidden_act", std::string("gelu_pytorch_tanh")) != "gelu_pytorch_tanh" ||
                 !vision.value("deepstack_visual_indexes", std::vector<int>{}).empty())
@@ -98,9 +62,6 @@ Components load_components(
         result.grid_vision.emplace(
             tyloi::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
                 weights,
-#ifndef TYLOINFER_NATIVE_CUDA
-                model.execution->weights,
-#endif
                 config, image, video,
                 component->input_contract, component->position_policy));
     } else if (model.plan.vision != ::tyloi::models::Vision::none) {
@@ -118,13 +79,8 @@ Components load_components(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
     auto predictor = tyloi::cuda::qwen4_exp::Predictor::load_if_present(
-#ifndef TYLOINFER_NATIVE_CUDA
-        *model.execution, weights, model.config, model.embed, model.lm_head,
-        model.metadata.final_logit_softcapping);
-#else
         weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping, yarn);
-#endif
     if (predictor) {
         result.mtp =
             std::make_unique<tyloi::cuda::qwen4_exp::Predictor>(

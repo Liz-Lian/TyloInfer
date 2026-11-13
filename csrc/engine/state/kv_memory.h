@@ -43,12 +43,10 @@ struct KvMemoryAllocation {
     void ensure(int64_t tokens);
 };
 
-#ifdef TYLOINFER_NATIVE_CUDA
 /** Allocate a request KV descriptor using the active CUDA executor's owner. */
 std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t maximum, int64_t heads,
     int64_t key_width, int64_t value_width, int64_t index_width, int64_t pool,
     const ::tyloi::TensorOptions& options, int64_t selected_columns = 0);
-#endif
 
 class KvMemoryManager {
 public:
@@ -59,13 +57,9 @@ public:
     // Cache outlives the manager and its allocations; call before expert arenas.
     void finalize(tyloi::weights::Cache& cache, std::size_t minimum_experts = 0);
     /** Reserve and advance live KV allocations for the requested token count. */
-#ifdef TYLOINFER_NATIVE_CUDA
     static void ensure(int64_t tokens);
     /** Check whether the active KV owner permits the requested graph layout. */
     static bool graph_supported(bool independent = false);
-#else
-    void ensure(int64_t tokens);
-#endif
     /** Bind the budget to this manager and its live offload stores. */
     void bind_budget(tyloi::engine::Budget* budget) noexcept;
     /** Flush all live offload stores, continuing after an individual failure. */

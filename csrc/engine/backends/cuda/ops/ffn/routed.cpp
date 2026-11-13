@@ -16,7 +16,6 @@
 #include <stdexcept>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count,
                                const tyloi::ops::MoeRouting& routing, const tyloi::DenseTensor* bias) {
@@ -158,5 +157,3 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
 }
 
 } // namespace tyloi::cuda::ops
-
-#endif

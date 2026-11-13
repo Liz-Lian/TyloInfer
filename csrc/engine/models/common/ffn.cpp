@@ -1,12 +1,9 @@
 #include "engine/models/common/ffn.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/ffn.h"
-#endif
 
 #include <stdexcept>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::models {
 namespace {
 
@@ -127,4 +124,3 @@ Tensor linear_ffn(const ops::FfnWeights& weights, const Tensor& norm,
 }
 
 } // namespace tyloi::models
-#endif

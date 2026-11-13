@@ -5,12 +5,8 @@
 #include "engine/state/kv_view.h"
 #include "engine/state/recurrent.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/linear.h"
 #include "engine/state/media.h"
-#else
-#include "engine/backends/cuda/ops/attention/linear.h"
-#endif
 
 #include <cstdint>
 #include <variant>
@@ -23,12 +19,7 @@ struct Model;
 // Linear attention keeps the projected rows until a speculative pass has
 // either been committed or replayed from its confirmed prefix.
 struct LinearState {
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::Linear::State attention;
-#else
-    Recurrent mixer;
-    LinearInputs projected;
-#endif
     std::int64_t speculative_ffn_batches = 0;
     std::int64_t speculative_projection_batches = 0;
 };
@@ -59,9 +50,7 @@ struct Layout {
 };
 
 class State
-#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::models::State
-#endif
 {
 public:
     struct Restore {
@@ -77,7 +66,6 @@ public:
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
 
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Check that this request state was created for the supplied model. */
     bool belongs_to(const Model& model) const noexcept { return model_ == &model; }
     /** Plan new persistent and speculative backing for a forward step. */
@@ -96,7 +84,6 @@ public:
     bool retains_partial_prefix(std::int64_t) const noexcept override { return true; }
     /** Validate and retain a snapshot for independent staged restoration. */
     std::unique_ptr<tyloi::models::Restore> prepare_restore(const TextSessionState&) override;
-#endif
 
     void preallocate();
     /** Reset request state for a batch, retaining compatible storage. */
@@ -132,12 +119,7 @@ public:
     const std::vector<Layout>& layout() const noexcept { return layout_; }
 
     std::vector<LayerState> layers;
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::cache::Media images;
-#endif
-#ifndef TYLOINFER_NATIVE_CUDA
-    std::unique_ptr<tyloi::models::MtpState> predictor;
-#endif
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
     std::int64_t speculative_start = -1;
@@ -147,12 +129,8 @@ public:
 private:
     std::vector<Layout> layout_;
     std::int64_t max_position_embeddings_;
-#ifdef TYLOINFER_NATIVE_CUDA
     const Model* model_;
     bool transposed_;
-#else
-    const bool* transposed_;
-#endif
 };
 
 } // namespace tyloi::cuda::qwen35

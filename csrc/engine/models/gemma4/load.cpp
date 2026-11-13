@@ -83,14 +83,6 @@ void load_layer(Layer& result, const tyloi::weights::Loader& weights, const Conf
     tyloi::models::gemma4::load_layer(result.attention, result, loader, config, layer, type);
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA
-Layer load_layer(const tyloi::weights::Loader& weights, const Config& config,
-                 int layer, const std::string& type) {
-    Layer result;
-    load_layer(result, weights, config, layer, type);
-    return result;
-}
-#endif
 
 void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           int gpu_layers, bool expert_parallel, bool load_layers, bool load_input_output) {

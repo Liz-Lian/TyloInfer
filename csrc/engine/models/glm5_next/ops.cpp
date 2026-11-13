@@ -10,10 +10,8 @@
 #include "engine/weights/loader.h"
 #include "engine/models/session/paged.h"
 #include "engine/ops.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/load.h"
 #include "engine/models/glm5_next/components.h"
-#endif
 #include <limits>
 #include <stdexcept>
 
@@ -70,16 +68,12 @@ struct LayerLoader : ::tyloi::weights::Loader {
     static Mhc mhc(Parameter function, Parameter base, Parameter scale) {
         return {std::move(function), std::move(base), std::move(scale)};
     }
-#ifdef TYLOINFER_NATIVE_CUDA
     static Parameter concat(const std::vector<Parameter> &parts) {
         std::vector<DenseTensor> dense;
         dense.reserve(parts.size());
         for (const auto& part : parts) dense.push_back(part.dense());
         return std::make_shared<DenseTensor>(::tyloi::cuda::cat(dense, 0));
     }
-#else
-    static DenseTensor concat(const std::vector<DenseTensor> &parts) { return ::tyloi::cuda::cat(parts, 0); }
-#endif
     static auto kda(KdaWeights weights, const Config &c) {
         return std::make_unique<Kda>(std::move(weights), c.kda_heads, c.kda_width, c.kda_kernel,
                                      c.lower_bound, c.eps);
@@ -160,11 +154,7 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
     if (load_input_output) {
         const bool separate = !model.config.tied_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
-#ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
-#else
-        model.output_norm = weights.tensor("model.output_norm.weight").dense();
-#endif
         model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
                                  : model.embed;
         if (load_layers) {
@@ -176,15 +166,10 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
-#ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
-#else
-        model.output_norm = weights.tensor("model.output_norm.weight").dense();
-#endif
     }
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
         std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
         const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
@@ -196,7 +181,6 @@ void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
     load(*model, weights, placement, options.gpu_layers);
     model->predictor = load_components(*model, weights, true);
 }
-#endif
 
 State::State(const Model& model) : model_(&model) {
     layers.reserve(model.layers.size());
@@ -299,7 +283,6 @@ static DenseTensor normalize_ids(Collectives& copies, int primary, DenseTensor i
     return copies.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 tyloi::models::Info Model::info() const { return tyloi::models::model_info(metadata); }
 
 MfqModelCapabilities Model::capabilities() const {
@@ -336,49 +319,22 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     return ::tyloi::ops::measure("model.embed", normalized.device(), [&] {
         return ::tyloi::ops::embedding(normalized, embed);
     });
-#else
-DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
-             DenseTensor ids, const Executor::Mode& mode) {
-    auto normalized = normalize_ids(copies, primary, std::move(ids));
-    return executor.profiler().measure("model.embed", [&] {
-        return quant_embedding_lookup(model.embed, std::move(normalized));
-    });
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::normalize(const ::tyloi::Tensor& input_hidden, int64_t, int64_t) const {
     const auto& model = *this;
     auto hidden = input_hidden.dense();
-#else
-DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t, int64_t) {
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     return rms_norm(hidden.mean(2), model.output_norm, model.metadata.rms_norm_eps);
-#else
-    return rms_norm(hidden.mean(2), model.output_norm, model.metadata.rms_norm_eps);
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::softcap(const ::tyloi::Tensor& value) const { return value; }
-#else
-DenseTensor softcap(const Model&, Executor&, DenseTensor value) { return value; }
-#endif
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::logits(const ::tyloi::Tensor& input_hidden, bool) const {
     return ::tyloi::ops::project(input_hidden, lm_head);
-#else
-DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
-              const Executor::Mode& mode) {
-    return executor.projector(mode.ffn).run(model.lm_head, hidden);
-#endif
 }
 
 bool supports_speculation(const Model& model) noexcept { return !model.layers.empty(); }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                const tyloi::models::ForwardOptions& options) const {
     tyloi::models::require_model(!input.suffix, "GLM5 does not support speculative suffix forwarding");
@@ -392,18 +348,10 @@ bool supports_speculation(const Model& model) noexcept { return !model.layers.em
     mode.kv_capacity = options.kv_capacity;
     mode.trace = options.trace;
     mode.trace_layer = options.trace_layer;
-#else
-DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
-               const Executor::Mode& mode, tyloi::models::Input input) {
-#endif
     MfqCudaGuard guard(mode.primary);
     auto ids = normalize_ids(copies, mode.primary, std::move(input.ids).dense());
     auto embeddings = input.embeddings.defined() ? std::move(input.embeddings).dense()
-#ifdef TYLOINFER_NATIVE_CUDA
         : embedding(ids, mode.primary).dense();
-#else
-        : embed(model, executor, copies, mode.primary, ids, mode);
-#endif
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
         embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
@@ -438,11 +386,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     }
     state.cache_pos += T;
     hidden = copies.copy(std::move(hidden), mode.primary);
-#ifdef TYLOINFER_NATIVE_CUDA
     auto finalized = normalize(hidden, B, T);
-#else
-    auto finalized = normalize(model, executor, std::move(hidden), B, T);
-#endif
     if (input.raw_hidden) *input.raw_hidden = finalized;
     return finalized;
 }
@@ -519,17 +463,10 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
                                        const DenseTensor &supplied_positions,
                                        const DenseTensor &supplied_embeddings) const {
     auto& state = this->state<PredictorState>(value);
-#ifdef TYLOINFER_NATIVE_CUDA
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
                           hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
                           hidden.size(1) == ids.size(1) && hidden.size(2) == hidden_norm.numel(),
                       "GLM5-Next MTP input geometry mismatch");
-#else
-    TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
-                          hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
-                          hidden.size(1) == ids.size(1) && hidden.size(2) == hidden_norm.numel(),
-                      "GLM5-Next MTP input geometry mismatch");
-#endif
     const auto b = ids.size(0), t = ids.size(1);
     auto dtype = ::tyloi::kFloat16;
     const auto capacity = config.maximum;
@@ -571,20 +508,12 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
         {
             auto mask = (pos == 0).reshape({pos.dim() == 1 ? 1 : b, t, 1});
             auto masked = ::tyloi::cuda::where(mask, ::tyloi::cuda::zeros_like(embeds), embeds);
-#ifdef TYLOINFER_NATIVE_CUDA
             e = rms_norm(masked, embedding_norm, config.eps);
-#else
-            e = rms_norm(masked, embedding_norm, config.eps);
-#endif
         }
         // Release prior-stage tensors before later projections allocate.
         embeds = {};
         DenseTensor streams;
-#ifdef TYLOINFER_NATIVE_CUDA
         streams = rms_norm(hidden, hidden_norm, config.eps);
-#else
-        streams = rms_norm(hidden, hidden_norm, config.eps);
-#endif
         x = ::tyloi::ops::project(::tyloi::cuda::cat({e, streams}, -1), fusion).dense();
     }
     DenseTensor multi;
@@ -600,11 +529,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
     }
     x = {};
     DenseTensor result;
-#ifdef TYLOINFER_NATIVE_CUDA
     result = rms_norm(multi, output_norm, config.eps).to(dtype);
-#else
-    result = rms_norm(multi, output_norm, config.eps).to(dtype);
-#endif
     if (cache) {
         state.batch = b;
         state.lengths[layer] = start + t;

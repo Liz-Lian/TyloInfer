@@ -3,10 +3,8 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
-#endif
 
 #include <algorithm>
 #include <cmath>
@@ -17,17 +15,14 @@
 #include <vector>
 
 namespace tyloi::cuda {
-#ifdef TYLOINFER_NATIVE_CUDA
 std::int64_t ops::attention_parts(std::int64_t planned_len) {
     return std::min<std::int64_t>(planned_len >= 192 ? (planned_len + 127) / 128 : 1,
                                   AttentionScratch::kMaxParts);
 }
-#endif
 namespace {
 
 using ::tyloi::indexing::Slice;
 
-#ifdef TYLOINFER_NATIVE_CUDA
 struct NativeAttentionInput {
     ::tyloi::DenseTensor query, key, value, positions, write_positions;
     MfqOptional<::tyloi::DenseTensor> sequence_lengths, attention_mask;
@@ -40,9 +35,6 @@ struct NativeKvView {
     std::int64_t page_size, pages_per_chunk, heads;
     bool paged() const noexcept { return page_size > 0; }
 };
-#else
-using NativeAttentionInput = AttentionInput;
-#endif
 
 MfqOptional<::tyloi::DenseTensor> minicpmo45_attention_mask(
     const NativeAttentionInput& request, const AttentionConfig& config,
@@ -98,7 +90,6 @@ MfqOptional<::tyloi::DenseTensor> minicpmo45_attention_mask(
 
 } // namespace
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 const tyloi::DenseTensor& dense(const tyloi::Tensor& tensor) {
     const auto* result = tensor.representation<tyloi::DenseTensor>();
@@ -200,14 +191,6 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
         scratch.split(request.query.size(0) * request.query.size(1), AttentionScratch::kMaxParts,
                       request.query.size(3), request.query.device());
     const auto pages = quantized_pages(public_kv);
-#else
-AttentionResult dispatch_attention(const AttentionInput& request,
-                                   const tyloi::state::KvView& kv,
-                                   const AttentionConfig& config,
-                                   AttentionScratch& scratch,
-                                   CudaProfiler& profiler) {
-    const auto pages = quantized_pages(kv);
-#endif
     const auto& q = request.query;
     const auto& k = request.key;
     const auto& v = request.value;
@@ -487,14 +470,9 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                     kv.visible_value.contiguous(), attn_scale, true);
     });
 
-#ifdef TYLOINFER_NATIVE_CUDA
     return AttentionResult{std::make_shared<::tyloi::DenseTensor>(std::move(attention)), attention_token_major};
-#else
-    return AttentionResult{std::move(attention), attention_token_major};
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::DenseTensor ops::sparse_attention(
     ::tyloi::DenseTensor query, ::tyloi::DenseTensor cache,
     ::tyloi::DenseTensor indices, ::tyloi::DenseTensor mask,
@@ -509,6 +487,5 @@ AttentionResult dispatch_attention(const AttentionInput& request,
         std::move(query), std::move(cache), std::move(indices), std::move(mask),
         std::move(sinks), scratch.meta, scale);
 }
-#endif
 
 } // namespace tyloi::cuda

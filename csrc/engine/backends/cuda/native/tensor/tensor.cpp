@@ -366,8 +366,7 @@ NativeIValue pickle_load(const std::vector<char>& bytes) {
     if (bytes.size() < 16 ||
         std::string_view(bytes.data(), magic.size()) != magic) {
         throw std::invalid_argument(
-            "native tensor file is not MFQTNSR1; legacy Torch pickle files require "
-            "the optional mfq-runtime-torch reference runtime");
+            "native tensor file is not MFQTNSR1");
     }
     const auto raw_type = static_cast<std::uint8_t>(bytes[8]);
     const auto rank = static_cast<std::uint8_t>(bytes[9]);

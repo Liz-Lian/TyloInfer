@@ -196,9 +196,6 @@ if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
     set_property(SOURCE ${TYLOINFER_CUDA_KERNEL_ROOT}/gated_residual_fused.cu APPEND
         PROPERTY COMPILE_OPTIONS "--split-compile=0")
 endif()
-target_compile_definitions(mfq-cuda-native-kernels PRIVATE
-    TYLOINFER_NATIVE_CUDA=1
-)
 target_include_directories(mfq-cuda-native-kernels PRIVATE
     ${PROJECT_SOURCE_DIR}
     ${TYLOINFER_REPOSITORY_ROOT}
@@ -303,7 +300,6 @@ set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/rms.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/rope.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/routes.cpp
-    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/gated.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/shared.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mixer.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/tq.cpp
@@ -329,8 +325,7 @@ endif()
 add_library(mfq-cuda-ops OBJECT ${TYLOINFER_CUDA_OP_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-ops)
 target_link_libraries(mfq-cuda-ops PRIVATE mfq-quant-readers)
-target_compile_definitions(mfq-cuda-ops PRIVATE
-    TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
+target_compile_definitions(mfq-cuda-ops PRIVATE NOMINMAX)
 set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
@@ -352,8 +347,7 @@ endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)
 target_link_libraries(mfq-cuda-execution PRIVATE mfq-cpu-execution mfq-engine)
-target_compile_definitions(mfq-cuda-execution PRIVATE
-    TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
+target_compile_definitions(mfq-cuda-execution PRIVATE NOMINMAX)
 set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set_source_files_properties(

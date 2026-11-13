@@ -6,7 +6,6 @@
 #include <iostream>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/resource_metrics.h"
 #include "engine/models/prepare.h"
 #include "engine/models/source.h"
@@ -23,7 +22,6 @@
 #include "engine/state/session/sessions.h"
 #include <stdexcept>
 #include <type_traits>
-#endif
 
 namespace tyloi::engine {
 
@@ -32,7 +30,6 @@ Engine::Engine() = default;
 void Engine::reset_states(std::int64_t batch) {
     for (auto& [id, request] : scheduler_->requests_) {
         if (!request.state) continue;
-#ifdef TYLOINFER_NATIVE_CUDA
         auto* predictor = model_ ? model_->mtp() : nullptr;
         if (predictor && (!request.state->predictor || !request.state->predictor->belongs_to(*predictor)))
             throw std::invalid_argument("predictor state is unavailable or belongs to another model");
@@ -40,21 +37,17 @@ void Engine::reset_states(std::int64_t batch) {
             for (const auto& [device, bytes] : request.state->reset_growth(batch))
                 if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
         }
-#endif
         request.state->release_graphs();
         request.state->reset(batch);
-#ifdef TYLOINFER_NATIVE_CUDA
         if (predictor) {
             if (budget_)
                 for (const auto& [device, bytes] : predictor->reset_growth(*request.state->predictor, batch))
                     if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
             predictor->reset(*request.state->predictor, batch);
         }
-#endif
     }
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<Engine> Engine::create(std::unique_ptr<models::CausalModel>& model,
         std::unique_ptr<tyloi::Executor>& executor, Config& config,
         std::shared_ptr<const ModelSource>& source, std::shared_ptr<weights::Memory>& memory,
@@ -158,23 +151,14 @@ void Engine::rebind(std::unique_ptr<models::CausalModel>& model, std::unique_ptr
     }
     install(std::move(graph));
 }
-#endif
 Engine::~Engine() {
-#ifdef TYLOINFER_NATIVE_CUDA
     if (scheduler_ || executor_) {
         try { shutdown(); }
         catch (const std::exception& error) { std::cerr << "runtime_unload_cleanup error=" << error.what() << '\n'; }
         catch (...) { std::cerr << "runtime_unload_cleanup error=unknown\n"; }
     }
-#endif
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA
-void Engine::retire_request(Request& request) noexcept {
-    request.generation = {};
-    request.state.reset();
-}
-#else
 EngineInfo Engine::describe() const { return info_; }
 
 bool Engine::ready() const { return ready_; }
@@ -382,6 +366,5 @@ SessionResult Engine::set_budget(const SessionCommand& command) {
     return change.apply();
 }
 
-#endif
 
 } // namespace tyloi::engine

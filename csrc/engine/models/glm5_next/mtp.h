@@ -27,11 +27,7 @@ struct PredictorState final : tyloi::models::MtpState {
 
 struct Mtp final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
-#ifdef TYLOINFER_NATIVE_CUDA
     using Parameter = ::tyloi::Tensor;
-#else
-    using Parameter = DenseTensor;
-#endif
     struct Layer {
         Parameter attention_norm, ffn_norm;
         std::unique_ptr<SparseMla> attention;

@@ -134,26 +134,14 @@ void load_attention_mixer(Block& block, Loader& ops, const ModelConfig& config, 
     block.attention_output_gate = output_gate;
     if constexpr (requires { block.no_rope = false; })
         block.no_rope = config.positional_encoding == PositionalEncoding::none;
-#ifdef TYLOINFER_NATIVE_CUDA
     block.attn_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(prefix + "attention.norm.weight"));
-#else
-    block.attn_norm = ops.dense(prefix + "attention.norm.weight");
-#endif
     const auto attention = prefix + "attention.";
     ops.qkv(block, {attention + "query.weight", attention + "key.weight", attention + "value.weight"});
     ops.output(block, attention + "output.weight");
     if (ops.has(attention + "query_norm.weight"))
-#ifdef TYLOINFER_NATIVE_CUDA
         block.q_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(attention + "query_norm.weight"));
-#else
-        block.q_norm = ops.dense(attention + "query_norm.weight");
-#endif
     if (ops.has(attention + "key_norm.weight"))
-#ifdef TYLOINFER_NATIVE_CUDA
         block.k_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(attention + "key_norm.weight"));
-#else
-        block.k_norm = ops.dense(attention + "key_norm.weight");
-#endif
 }
 
 template <class Block, class Loader>
@@ -170,9 +158,7 @@ struct LayerPlacementConfig;
 namespace tyloi { class ModelSource; }
 namespace tyloi::weights { struct Loader; }
 namespace tyloi::cuda { struct FullAttention; class Ffn; }
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::ops { struct FfnWeights; }
-#endif
 
 struct TransformerWeightLoader {
     const tyloi::weights::Loader& weights;
@@ -195,14 +181,12 @@ struct TransformerWeightLoader {
         const std::string& down, const std::string& gate, const std::string& up) const;
     void experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Load a dense FFN's optional important-neuron branch. */
     void important_neurons(int64_t hidden, int64_t intermediate, tyloi::ops::FfnWeights& ffn,
         const std::string& down, const std::string& gate, const std::string& up) const;
     /** Load one routed expert projection into public FFN weights. */
     void experts(tyloi::ops::FfnWeights& ffn, tyloi::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
-#endif
     ::tyloi::Tensor headwise(const std::string& name) const;
     static std::vector<std::int64_t> shape(const ::tyloi::DenseTensor& value);
     static int64_t elements(const ::tyloi::DenseTensor& value);
@@ -229,14 +213,12 @@ tyloi::cuda::Ffn load_moe_weights(
 /** Fill an owned routed FFN while retaining partial weights if loading fails. */
 void load_moe_weights_into(tyloi::cuda::Ffn&, const tyloi::weights::Loader&,
     std::string_view prefix, const MoeWeightLoadOptions& options);
-#ifdef TYLOINFER_NATIVE_CUDA
 /** Load routed FFN weights and validate their expert geometry. */
 tyloi::ops::FfnWeights load_moe_data(const tyloi::weights::Loader& weights,
     std::string_view prefix, const MoeWeightLoadOptions& options);
 /** Fill owned public FFN weights while retaining partial weights if loading fails. */
 void load_moe_data_into(tyloi::ops::FfnWeights&, const tyloi::weights::Loader&,
     std::string_view prefix, const MoeWeightLoadOptions& options);
-#endif
 void load_important_neuron_branch(
     const tyloi::weights::Loader& weights,
     int64_t hidden_size,

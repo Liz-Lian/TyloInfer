@@ -3,9 +3,7 @@
 #include "engine/models/state.h"
 #include "engine/models/session/snapshot.h"
 #include "engine/models/session/size.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/state/media.h"
-#endif
 
 #include <memory>
 #include <vector>
@@ -34,7 +32,6 @@ public:
 
     void preallocate() override {}
     void reset(std::int64_t batch) override;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Plan backing allocations required by reset. */
     std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t batch) const override;
     /** Conservatively plan retained speculative allocations for a forward pass. */
@@ -43,7 +40,6 @@ public:
         std::int64_t confirmed = 0) const override;
     /** Conservatively plan the speculative journal before it is created. */
     std::vector<std::pair<tyloi::Device, std::size_t>> suffix_growth(std::int64_t tokens) const override;
-#endif
     std::int64_t position() const noexcept override { return cache_pos; }
     void advance(std::int64_t tokens) noexcept override { cache_pos += tokens; }
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
@@ -57,15 +53,10 @@ public:
     TextSessionStateKind text_session_state_kind() const;
     /** Capture a text session snapshot for the committed tokens. */
     TextSessionState capture_text_session_state(const std::vector<std::int64_t>& tokens) const override;
-#ifndef TYLOINFER_NATIVE_CUDA
-    /** Restore a compatible text session snapshot. */
-    void restore_text_session_state(const TextSessionState& state) override;
-#else
     /** Plan allocations needed to restore a compatible snapshot. */
     std::vector<std::pair<tyloi::Device, std::size_t>> restore_growth(const TextSessionState& state) const override;
     /** Prepare a staged restore without mutating the live state. */
     std::unique_ptr<tyloi::models::Restore> prepare_restore(const TextSessionState& state) override;
-#endif
 
     // Speculative suffix journal; the block records hold the checkpoints.
     /** Begin journaling an uncommitted speculative suffix. */
@@ -76,9 +67,7 @@ public:
     void rollback_speculative(std::int64_t accepted) override;
 
     std::unique_ptr<deepseek_v41_runtime::SharedState> shared;
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::cache::Media media;
-#endif
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
     std::int64_t batch = 0;

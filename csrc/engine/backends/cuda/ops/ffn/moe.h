@@ -71,9 +71,7 @@ public:
     MoeSharedExpert(::tyloi::Tensor gate, ::tyloi::Tensor up, ::tyloi::Tensor down,
                     ::tyloi::Tensor scalar_gate);
     ::tyloi::DenseTensor forward(const Projector&, const ::tyloi::DenseTensor&, std::int64_t rows) const;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::DenseTensor forward(const ::tyloi::DenseTensor&, std::int64_t rows) const;
-#endif
     ::tyloi::DenseTensor gate(const Projector&, const ::tyloi::DenseTensor&) const;
     std::array<::tyloi::Tensor,3> projections;
     ::tyloi::Tensor scalar_gate;

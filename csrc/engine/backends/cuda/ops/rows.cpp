@@ -1,5 +1,4 @@
 #include "engine/weights/row_stage.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
@@ -9,12 +8,10 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
-#endif
 #include <stdexcept>
 
 namespace tyloi::weights {
 struct RowStage::Graph {
-#ifdef TYLOINFER_NATIVE_CUDA
     cuda::HostBuffer flags{128, true};
     MfqCudaStream upload_stream;
     std::uint32_t* device = nullptr;
@@ -40,29 +37,18 @@ struct RowStage::Graph {
         if (charged) cuda::tensor_host_bytes.fetch_sub(128);
     }
     std::uint32_t* host() const { return static_cast<std::uint32_t*>(flags.data()); }
-#else
-    explicit Graph(const Device&) {}
-#endif
     std::vector<std::int64_t> ids, shape;
 };
 
 RowStage::RowStage() = default;
 RowStage::~RowStage() = default;
 void RowStage::init_graph(const Device& device) {
-#ifdef TYLOINFER_NATIVE_CUDA
     const MfqCudaGuard guard(device);
     graph_ = std::make_unique<Graph>(device);
     graph_->mapped = mapped_rows();
-#else
-    (void)device;
-#endif
 }
 void RowStage::prepare_graph() {
-#ifdef TYLOINFER_NATIVE_CUDA
     if (!graph_) init_graph(output().device());
-#else
-    throw std::logic_error("graph row transfer requires native CUDA");
-#endif
 }
 void RowStage::prefetch_rows(const std::vector<std::int64_t>&, const std::vector<std::int64_t>&) {}
 void RowStage::set_rows(const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& shape) {
@@ -71,7 +57,6 @@ void RowStage::set_rows(const std::vector<std::int64_t>& ids, const std::vector<
     graph_->shape = shape;
 }
 void RowStage::decode_graph() {
-#ifdef TYLOINFER_NATIVE_CUDA
     auto* window = cuda::DecodeWindow::recording();
     if (!window || !graph_) throw std::logic_error("row stage requires an active graph window");
     auto stage = shared_from_this();
@@ -111,8 +96,5 @@ void RowStage::decode_graph() {
     cuda::signal_mapped_flag(graph_->device, stream);
     cuda::wait_mapped_flag(graph_->device + 16, stream);
     decode();
-#else
-    throw std::logic_error("graph row transfer requires native CUDA");
-#endif
 }
 } // namespace tyloi::weights

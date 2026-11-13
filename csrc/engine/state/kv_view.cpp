@@ -6,7 +6,6 @@
 #include <stdexcept>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 namespace {
@@ -73,4 +72,3 @@ tyloi::state::KvView tyloi::state::allocate_kv(
     result.dtype = dtype;
     return result;
 }
-#endif

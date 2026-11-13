@@ -1,6 +1,5 @@
 #include "engine/ops.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/norm/layer.h"
@@ -23,10 +22,8 @@
 #include <exception>
 #include <iostream>
 #include <limits>
-#endif
 
 namespace tyloi::ops {
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 const DenseTensor& dense(const Tensor& value) {
     const auto* result = value.representation<DenseTensor>();
@@ -1076,5 +1073,4 @@ void index_fill(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_te
     compatible(value, indices);
     cuda::ops::index_fill(value, dim, indices, fill_value);
 }
-#endif
 } // namespace tyloi::ops

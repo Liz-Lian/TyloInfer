@@ -6,11 +6,7 @@
 #include "engine/weights/format.h"
 #include "engine/backends/cpu/ops/projection/packed_nint.h"
 #include "cpu_rows.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/working_set.h"
-#else
-#include "engine/weights/nint_cache.h"
-#endif
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/executor/options.h"
 
@@ -429,11 +425,7 @@ static ::tyloi::DenseTensor nint_matmul_cpu(
 }
 namespace {
 bool decoded_reuse_active() noexcept {
-#ifdef TYLOINFER_NATIVE_CUDA
     return tyloi::cuda::decoded_work_active();
-#else
-    return NintCache::active();
-#endif
 }
 bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
     // Batched decode projects directly from packed weights. Preserve
@@ -502,15 +494,11 @@ bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
                 w.sub_scale, w.sub_min, w.neuron_scale, w.neuron_min,
                 w.neuron_len, w.gs);});
         };
-#ifdef TYLOINFER_NATIVE_CUDA
         auto dense = tyloi::cuda::decoded_work_find(w);
         if (!dense.defined()) {
             dense = decode();
             tyloi::cuda::decoded_work_store(w, dense);
         }
-#else
-        auto dense=NintCache::get(w,decode);
-#endif
         return profiler.measure("nint.gemm", [&]() {
             return ::tyloi::cuda::matmul(x, dense.transpose(0, 1));
         });

@@ -27,11 +27,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     const auto &sampling = request.sampling;
     const auto &token_constraint = request.token_constraint;
     using Tensor = typename Ops::Tensor;
-#ifdef TYLOINFER_NATIVE_CUDA
     Tensor restored_last_hidden = std::move(restored);
-#else
-    Tensor restored_last_hidden = restored ? restored.dense() : Tensor{};
-#endif
     auto &state = ops.state;
     const auto &metadata = ops.info;
     auto &mtp = ops.mtp;
@@ -49,14 +45,9 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     require_execution(
         reused_tokens < prompt.size(), "restored MTP prefix must be shorter than the prompt");
     const bool transformed_prompt = prepared != nullptr && prepared->transformed();
-#ifdef TYLOINFER_NATIVE_CUDA
     const Tensor prepared_positions = transformed_prompt && prepared->positions
         ? prepared->positions : Tensor{};
     const bool prepared_embeddings = transformed_prompt && prepared->embeddings.defined();
-#else
-    const Tensor prepared_positions = transformed_prompt ? prepared->positions.dense() : Tensor{};
-    const bool prepared_embeddings = transformed_prompt && ops.defined(prepared->embeddings.dense());
-#endif
     const bool positioned_prompt = transformed_prompt && ops.defined(prepared_positions);
     require_execution(prepared == nullptr || prepared->token_ids == prompt,
         "prepared MTP prompt disagrees with rendered token IDs");
@@ -461,21 +452,13 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                             return ops.draft_block(std::move(ids), requested_depth);
                         else return mtp.draft_block(predictor, ids, requested_depth);
                     }();
-#ifdef TYLOINFER_NATIVE_CUDA
                     const auto& block = block_result;
-#else
-                    const auto& block = block_result.dense();
-#endif
                     require_execution(ops.size(block, 1) == requested_depth,
                         "block predictor returned an incomplete draft");
                     auto previous = ops.ids_for({next_ids.back()});
                     for (int position = 0; position < requested_depth; ++position) {
                         auto logits = mtp.draft_next(ops.slice(block, 1, position, 1), previous);
-#ifdef TYLOINFER_NATIVE_CUDA
                         const auto token = select_draft(logits);
-#else
-                        const auto token = select_draft(logits.dense());
-#endif
                         previous = ops.ids_for({token});
                     }
                 }
@@ -514,13 +497,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             predictor_history_position += history_rows;
             require_execution(predictor.position() == predictor_history_position,
                 "MTP predictor cache did not advance");
-#ifdef TYLOINFER_NATIVE_CUDA
             const auto& sample = head.sample_hidden;
             const auto& chain = head.chain_hidden;
-#else
-            const auto& sample = head.sample_hidden.dense();
-            const auto& chain = head.chain_hidden.dense();
-#endif
             auto sample_hidden = ops.slice(sample, 1, ops.size(sample, 1) - 1, 1);
             auto chain_hidden = ops.slice(chain, 1, ops.size(chain, 1) - 1, 1);
             for (int position = 0; position < requested_depth; ++position) {
@@ -536,13 +514,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                         positioned_prompt
                             ? ops.decode_positions(predictor_history_position + position + 1, 1)
                             : Tensor{});
-#ifdef TYLOINFER_NATIVE_CUDA
                     sample_hidden = next.sample_hidden;
                     chain_hidden = next.chain_hidden;
-#else
-                    sample_hidden = next.sample_hidden.dense();
-                    chain_hidden = next.chain_hidden.dense();
-#endif
                 }
             }
             return result;

@@ -20,11 +20,9 @@
 #include <numeric>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/ops.h"
-#endif
 
 namespace {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -131,7 +129,6 @@ QuantLinearGroup tyloi::cuda::Projector::group(
     return result;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 tyloi::DenseTensor tyloi::cuda::ops::embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight) {
     std::optional<MfqCudaGuard> guard;
     if (ids.is_cuda()) guard.emplace(ids.device().index);
@@ -246,7 +243,6 @@ tyloi::DenseTensor tyloi::cuda::ops::sigmoid_project(tyloi::DenseTensor input, t
         weight, input,
         gate, InputGateMode::Sigmoid);
 }
-#endif
 
 ::tyloi::DenseTensor run_quant_linear_shard(
         CudaProfiler& profiler,

@@ -97,13 +97,9 @@ Generation generate_session(Ops& ops, InferenceRequest& request, InferenceOutput
     const bool use_mtp = mtp && sampling.enable_mtp && sampling.max_tokens > 1;
     const bool mtp_session = [&] {
         if (!use_mtp) return false;
-#ifdef TYLOINFER_NATIVE_CUDA
         if constexpr (requires { state.predictor; })
             return state.predictor && mtp->supports_session_state(*state.predictor);
         else return false;
-#else
-        return mtp->supports_session_state();
-#endif
     }();
     if constexpr(requires { ops.set_prefix_boundary(size_t{}); })
         ops.set_prefix_boundary(caching?std::min(plan.stable_prefix_tokens,prompt.size()-1):0);

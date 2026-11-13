@@ -2,9 +2,7 @@
 
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/executor.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
-#endif
 
 #include <chrono>
 #include <cstdint>
@@ -14,11 +12,7 @@
 #include <vector>
 
 namespace tyloi::cuda {
-#ifdef TYLOINFER_NATIVE_CUDA
 using Trace = tyloi::ops::Trace;
-#else
-using Trace = std::vector<std::pair<std::string, ::tyloi::DenseTensor>>;
-#endif
 }
 
 void report_cuda_memory(bool enabled, const char* stage);

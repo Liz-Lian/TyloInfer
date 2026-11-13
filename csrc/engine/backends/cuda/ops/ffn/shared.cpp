@@ -9,10 +9,8 @@
 #include <algorithm>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "matmul_rows.h"
-#endif
 
 namespace tyloi::cuda {
 namespace {
@@ -57,12 +55,8 @@ DenseTensor MoeSharedExpert::raw(const Projector& project,const DenseTensor& sou
     const auto& shared_u=projections[1];
     const auto& shared_d=projections[2];
     if(tq) {
-#ifdef TYLOINFER_NATIVE_CUDA
         const std::array<::tyloi::Tensor, 2> weights{shared_g, shared_u};
         const auto group = project.group(weights);
-#else
-        const auto group = make_quant_group({shared_g, shared_u}, false, false);
-#endif
         auto output=project.run(shared_d,project.swiglu(group,source));
         return ::tyloi::cuda::sigmoid(project.run(scalar_gate,source))*output;
     }
@@ -78,7 +72,6 @@ DenseTensor MoeSharedExpert::raw(const Projector& project,const DenseTensor& sou
 }
 
 DenseTensor MoeSharedExpert::forward(const Projector& project,const DenseTensor& source,int64_t rows) const {
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto parallel_option=::tyloi::cuda::options::moe_prefill_shared_streams();
     const int streams=parallel_option?*parallel_option:0;
     const auto chain_option=::tyloi::cuda::options::moe_prefill_shared_chain_streams();
@@ -113,7 +106,6 @@ DenseTensor MoeSharedExpert::forward(const Projector& project,const DenseTensor&
         });
         return scale*output;
     }
-#endif
     return preserve_rows(source,rows,[&](const DenseTensor& part){return raw(project,part);});
 }
 
@@ -134,10 +126,8 @@ DenseTensor MoeSharedExpert::gate(const Projector& project,const DenseTensor& in
     return ::tyloi::cuda::sigmoid(project.run(scalar_gate,input));
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 DenseTensor MoeSharedExpert::forward(const DenseTensor& source,int64_t rows) const {
     auto& executor=Executor::current();
     return forward(executor.projector(Executor::current_ffn()),source,rows);
 }
-#endif
 } // namespace tyloi::cuda

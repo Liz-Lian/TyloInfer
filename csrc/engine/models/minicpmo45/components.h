@@ -4,17 +4,12 @@
 #include "engine/models/common/prompt.h"
 #include "engine/requests/media.h"
 #include "engine/requests/result.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/duplex.h"
 #include "engine/models/media.h"
 #include "engine/models/speech.h"
-#endif
 
 #include <memory>
 
-#ifndef TYLOINFER_NATIVE_CUDA
-struct CudaExecutionContext;
-#endif
 namespace tyloi::weights { struct Loader; }
 namespace tyloi::cuda {
 class Executor;
@@ -22,12 +17,9 @@ namespace minicpmo45 {
 namespace text { struct Model; class State; }
 
 class Components
-#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::models::Speech
-#endif
 {
   public:
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Load immutable media and speech weights for the selected device. */
     static std::unique_ptr<Components> load(const tyloi::weights::Loader&, int primary);
     ~Components();
@@ -50,34 +42,15 @@ class Components
         tyloi::models::SpeechOptions options, bool capture_logits, std::mt19937* evaluator_rng) const override;
     /** Create a cold duplex session borrowing the given language request. */
     std::unique_ptr<tyloi::models::Duplex> duplex(const text::Model&, text::State&) const;
-#else
-    Components(const text::Model& language, text::State& language_state,
-               Executor& language_executor, const tyloi::weights::Loader& weights,
-               CudaExecutionContext& execution);
-    ~Components();
-
-    tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<int64_t>& prompt,
-                                               const MfqMultimodalInput& media);
-    void start(const MfqDuplexSessionParams& parameters);
-    MfqDuplexStepResult step(const MfqDuplexStepInput& input);
-    void stop();
-#endif
 
   private:
     struct State;
-#ifdef TYLOINFER_NATIVE_CUDA
     explicit Components(std::unique_ptr<State>);
     enum class MediaMode { prompt, images, audios };
     std::unique_ptr<tyloi::models::Media::Request> media_request(const text::Model&,
         tyloi::models::MediaInput, MediaMode) const;
-#endif
     std::unique_ptr<State> state_;
 };
 
-#ifndef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<Components> load_components(text::Model& model, text::State& state,
-    Executor& executor, const tyloi::weights::Loader& weights,
-    bool load_optional_components, CudaExecutionContext& execution);
-#endif
 } // namespace minicpmo45
 } // namespace tyloi::cuda

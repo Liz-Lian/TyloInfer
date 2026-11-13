@@ -11,12 +11,6 @@
 #include "engine/models/qwen35/state.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/backends/cuda/native/collectives.h"
-#include "engine/backends/cuda/executor/executor.h"
-#include "engine/backends/cuda/ops/projection/projection.h"
-#include "engine/weights/cache.h"
-#endif
 #include "engine/weights/placement.h"
 
 #include <iostream>
@@ -52,67 +46,31 @@ void Components::describe(tyloi::engine::EngineInfo& info) const {
 }
 
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
-#ifdef TYLOINFER_NATIVE_CUDA
     const Model& language, tyloi::cache::Media& images,
-#else
-    Model& language, tyloi::cache::Media& images,
-#endif
-#ifndef TYLOINFER_NATIVE_CUDA
-    Projector projector, Collectives& collectives,
-#endif
     int primary,
-#ifndef TYLOINFER_NATIVE_CUDA
-    Executor* executor,
-#endif
     const std::vector<int64_t>& tokens, const MfqMultimodalInput& media)
-#ifdef TYLOINFER_NATIVE_CUDA
     const
-#endif
     {
     if (grid_vision)
         return grid_vision->prepare(language, images,
-#ifndef TYLOINFER_NATIVE_CUDA
-            projector, collectives,
-#endif
             primary,
-#ifndef TYLOINFER_NATIVE_CUDA
-            executor,
-#endif
             tokens, media);
     throw std::invalid_argument("model has no multimodal component");
 }
 
 Components Components::load(
     Model& model,
-#ifdef TYLOINFER_NATIVE_CUDA
     const ::tyloi::weights::Loader& weights,
     LayerPlacementConfig& placement,
     int cpu_layers,
     bool optional,
     bool cpu_offload,
     bool transfer_auto) {
-#else
-    const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
-    LayerPlacementConfig& placement,
-    int& cpu_layers,
-    Executor& executor,
-    Collectives& copies,
-    const int64_t& kv_capacity,
-    Trace* const& trace,
-    const int& trace_scope,
-    bool optional,
-    bool cpu_offload,
-    bool preallocate) {
-#endif
     Components components{model.graph, model.plan};
     if (!optional) return components;
     const bool mtp_allowed =
         !placement.enabled() && cpu_layers == 0 && !cpu_offload &&
-#ifdef TYLOINFER_NATIVE_CUDA
         transfer_auto;
-#else
-        cache.transfer() == ::tyloi::weights::Cache::Transfer::automatic;
-#endif
 
     if (components.plan.vision == ::tyloi::models::Vision::grid_vit) {
         const auto* component = components.graph.component("vision");
@@ -125,9 +83,6 @@ Components Components::load(
         components.grid_vision.emplace(
             grid_vision_runtime::CudaGridVisionPromptComponent::load(
                 weights,
-#ifndef TYLOINFER_NATIVE_CUDA
-                cache,
-#endif
                 *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
@@ -142,17 +97,9 @@ Components Components::load(
             auto predictor = load_predictor(
                 loader, model.config, cuda_kv_quantization());
             if (predictor) {
-#ifdef TYLOINFER_NATIVE_CUDA
                 components.mtp = std::make_unique<Mtp>(
                     std::move(*predictor), model.embed, model.rope,
                     weights.placement.device);
-#else
-                // Mtp retains these references, so they must outlive the result.
-                components.mtp = std::make_unique<Mtp>(
-                    std::move(*predictor), model.embed, model.rope,
-                    executor.fork(), copies, weights.placement.device,
-                    kv_capacity, trace, trace_scope, preallocate);
-#endif
             }
         } else {
             std::cerr

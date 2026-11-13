@@ -13,7 +13,6 @@ namespace tyloi::cuda::qwen35 {
 MtpState::MtpState(const tyloi::models::Mtp& owner, std::vector<Layout> layout, int64_t hidden)
     : tyloi::models::MtpState(owner), layout_(std::move(layout)), kv_(layout_.size()), hidden_(hidden) {}
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 void add_bytes(std::vector<std::pair<tyloi::Device, std::size_t>>& result,
                tyloi::Device device, std::size_t bytes) {
@@ -70,7 +69,6 @@ std::unique_ptr<tyloi::models::Restore> MtpState::prepare_restore(const MtpSessi
     };
     return std::make_unique<Candidate>(*this, snapshot);
 }
-#endif
 
 void MtpState::prepare(int64_t batch, int64_t tokens, int64_t kl_capacity) {
     TYLOINFER_RUNTIME_CHECK(batch > 0 && tokens > 0, "invalid MTP state dimensions");
@@ -179,11 +177,7 @@ void MtpState::stage(Restore& restore, const MtpSessionState& saved) const {
     for (size_t index = 0; index < restore.kv.size(); ++index) {
         const auto& layout = layout_[index];
         MfqCudaGuard guard(layout.device);
-#ifdef TYLOINFER_NATIVE_CUDA
         stage_kv(restore.kv[index], blocks[index], layout.head_dim,
-#else
-        restore_kv(restore.kv[index], blocks[index], layout.head_dim,
-#endif
             layout.dtype, layout.quantization);
     }
 }

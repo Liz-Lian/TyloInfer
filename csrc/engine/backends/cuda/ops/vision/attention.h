@@ -123,7 +123,6 @@ inline DenseTensor segmented_attention(
 
 } // namespace tyloi::cuda::vision
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 inline tyloi::DenseTensor attention(tyloi::DenseTensor query, tyloi::DenseTensor key, tyloi::DenseTensor value,
                              const std::optional<tyloi::DenseTensor>& mask, double scale) {
@@ -142,4 +141,3 @@ inline tyloi::DenseTensor segmented_attention(tyloi::DenseTensor query, tyloi::D
                                        value, lengths);
 }
 }
-#endif

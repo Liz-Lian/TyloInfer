@@ -1,12 +1,6 @@
 #pragma once
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
-#else
-#include "engine/backends/cuda/ops/attention/attention.h"
-#include "engine/backends/cuda/ops/rope/rope.h"
-#include "engine/backends/cuda/ops/projection/projection.h"
-#endif
 
 #include <array>
 #include <cstdint>
@@ -16,22 +10,14 @@
 namespace tyloi::cuda {
 
 struct AttentionStep {
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor positions;
     ::tyloi::Tensor sequence_lengths;
     ::tyloi::Tensor cache_positions;
-#else
-    ::tyloi::DenseTensor positions;
-    MfqOptional<::tyloi::DenseTensor> sequence_lengths = mfq_nullopt;
-    MfqOptional<::tyloi::DenseTensor> cache_positions = mfq_nullopt;
-#endif
     std::int64_t cache_position = 0;
     std::int64_t planned_kv_length = 0;
     std::int64_t decode_attention_parts = 0;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Optional key-validity mask covering the visible cache. */
     ::tyloi::Tensor attention_mask;
-#endif
 };
 
 struct FullAttention {
@@ -50,34 +36,17 @@ struct FullAttention {
     bool official_bf16 = false;
     // NoPE GQA: skip rotary operations while keeping the KV cache normal.
     bool no_rope = false;
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::RopeTable attention_rope;
     ::tyloi::Tensor attn_norm, q_norm, k_norm, v_norm;
-#else
-    RopeCache attention_rope;
-    ::tyloi::DenseTensor attn_norm, q_norm, k_norm, v_norm;
-#endif
     std::vector<::tyloi::Tensor> qkv;
     bool attention_output_gate = false;
     bool split_q_kv_projections = false;
     ::tyloi::Tensor q_projection, k_projection, v_projection, o;
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::state::KvQuantization kv_quantization;
     std::array<::tyloi::Tensor, 2> forward(
         const tyloi::Tensor& input, const AttentionStep& step,
         tyloi::state::KvView cache, const tyloi::ops::RopeTable& rope,
         tyloi::ops::Trace* trace = nullptr) const;
-#else
-    tyloi::state::KvQuantization kv_quantization;
-    std::array<::tyloi::DenseTensor, 2> forward(
-        const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
-        ::tyloi::DenseTensor input,
-        const AttentionStep& step,
-        tyloi::state::KvView cache,
-        AttentionScratch& scratch,
-        const RopeCache& rope,
-        Trace* trace = nullptr) const;
-#endif
 };
 
 } // namespace tyloi::cuda

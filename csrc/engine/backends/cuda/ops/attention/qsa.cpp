@@ -1,6 +1,5 @@
 #include "engine/ops/qsa.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/attention/qsa_core.h"
 
 #include <algorithm>
@@ -319,4 +318,3 @@ void Qsa::Graph::prepare(std::size_t request_index, const Tensor& positions) con
 }
 
 } // namespace tyloi::ops
-#endif

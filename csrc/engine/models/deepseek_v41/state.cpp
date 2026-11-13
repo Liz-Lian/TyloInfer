@@ -67,11 +67,7 @@ tyloi::models::SnapshotSize snapshot_size(const State& state,const tyloi::models
                                   item->layer < std::int64_t(state.shared->layers.size()),
                               "DeepSeek-V4.1 layer state is not allocated");
         const auto& entry=state.shared->layers[static_cast<std::size_t>(item->layer)];
-#ifdef TYLOINFER_NATIVE_CUDA
         const auto& layer=entry.attention;
-#else
-        const auto& layer=entry;
-#endif
         incoming+=session_tensor_bytes(layer.local_kv)+session_tensor_bytes(layer.partial_kv)+
             session_tensor_bytes(layer.partial_score)+prefix_bytes(layer.compressed_kv,layer.compressed_length)+
             prefix_bytes(layer.index_k,layer.compressed_length);
@@ -90,7 +86,6 @@ State::State(Model& model)
 State::~State() = default;
 
 namespace {
-#ifdef TYLOINFER_NATIVE_CUDA
 using Growth = std::vector<std::pair<tyloi::Device, std::size_t>>;
 void add(Growth& result, tyloi::Device device, std::size_t bytes) {
     if (!bytes) return;
@@ -102,10 +97,8 @@ void add(Growth& result, tyloi::Device device, std::size_t bytes) {
         it->second+=bytes;
     }
 }
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 std::vector<std::pair<tyloi::Device, std::size_t>> State::reset_growth(std::int64_t next_batch) const {
     if(next_batch<=0) throw std::invalid_argument("DeepSeek-V4.1 reset batch must be positive");
     Growth result;
@@ -145,7 +138,6 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
     }
     return result;
 }
-#endif
 
 void State::set_image_mask(::tyloi::Tensor mask) {
     auto& state = *shared;
@@ -176,21 +168,15 @@ void State::begin_forward(bool capture_raw_hidden) {
 }
 
 void State::reset(std::int64_t next_batch) {
-#ifdef TYLOINFER_NATIVE_CUDA
     set_image_mask({});
-#endif
     cache_pos = decode_position_delta = 0;
     speculative_start = -1;
     speculative_confirmed = 0;
     speculative_suffix_forward = false;
     batch = next_batch;
     for (auto& block : model_.blocks) {
-#ifdef TYLOINFER_NATIVE_CUDA
         block->attention->reset(shared->layers.at(static_cast<std::size_t>(block->layer)).attention, next_batch);
         if (block->layer == 0) shared->reset_session(next_batch);
-#else
-        block->reset(*shared, next_batch);
-#endif
     }
 }
 
@@ -198,25 +184,10 @@ std::vector<::tyloi::Tensor> State::storage() const {
     std::vector<::tyloi::Tensor> result;
     for (const auto& block : model_.blocks) {
         const auto& state = shared->layers.at(static_cast<std::size_t>(block->layer));
-#ifdef TYLOINFER_NATIVE_CUDA
         auto tensors = block->attention->storage(state.attention);
         result.insert(result.end(), tensors.begin(), tensors.end());
-#else
-        if (state.local_kv.defined()) result.push_back(state.local_kv);
-        if (state.compressed_kv.defined()) result.push_back(state.compressed_kv);
-        if (state.index_k.defined()) result.push_back(state.index_k);
-        if (state.partial_kv.defined()) result.push_back(state.partial_kv);
-        if (state.partial_score.defined()) result.push_back(state.partial_score);
-        if (state.speculative_local_slots.defined()) result.push_back(state.speculative_local_slots);
-        if (state.speculative_slot_ids.defined()) result.push_back(state.speculative_slot_ids);
-        if (state.speculative_partial_kv.defined()) result.push_back(state.speculative_partial_kv);
-        if (state.speculative_partial_score.defined()) result.push_back(state.speculative_partial_score);
-        if (state.speculative_projected_kv.defined()) result.push_back(state.speculative_projected_kv);
-        if (state.speculative_projected_score.defined()) result.push_back(state.speculative_projected_score);
-#endif
         if (state.current_ids.defined()) result.push_back(state.current_ids);
     }
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto& attention = shared->attention;
     if (attention.compressed_kv.defined()) result.push_back(attention.compressed_kv);
     if (attention.index_k.defined()) result.push_back(attention.index_k);
@@ -225,16 +196,7 @@ std::vector<::tyloi::Tensor> State::storage() const {
     for (const auto* tensor : {&shared->ced_source, &shared->attention_input,
                                &shared->attention_positions, &shared->attention_lengths})
         if (tensor->defined()) result.emplace_back(tensor->dense());
-#else
-    if (shared->compressed_kv.defined()) result.push_back(shared->compressed_kv);
-    if (shared->index_k.defined()) result.push_back(shared->index_k);
-    if (shared->topk.defined()) result.push_back(shared->topk);
-    if (shared->candidate_blocks.defined()) result.push_back(shared->candidate_blocks);
-#endif
     if (shared->previous_pre.defined()) result.push_back(shared->previous_pre);
-#ifndef TYLOINFER_NATIVE_CUDA
-    if (shared->attention_meta.defined()) result.push_back(shared->attention_meta);
-#endif
     if (shared->image_mask.defined()) result.push_back(shared->image_mask);
     if (shared->text_rows.defined()) result.push_back(shared->text_rows);
     if (shared->routing_mask.defined()) result.push_back(shared->routing_mask);
@@ -242,13 +204,8 @@ std::vector<::tyloi::Tensor> State::storage() const {
         if (hidden.defined()) result.push_back(hidden);
     for (const auto& engram : shared->engram_states) {
         if (!engram) continue;
-#ifdef TYLOINFER_NATIVE_CUDA
         auto buffers = engram->storage();
         result.insert(result.end(),buffers.begin(),buffers.end());
-#else
-        auto buffer = engram->storage();
-        if (buffer.defined()) result.push_back(std::move(buffer));
-#endif
     }
     return result;
 }
@@ -265,24 +222,14 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
     std::size_t begun = 0;
     try {
         for (auto& block : model_.blocks) {
-#ifdef TYLOINFER_NATIVE_CUDA
             block->attention->begin_speculative(shared->layers.at(static_cast<std::size_t>(block->layer)).attention, draft_tokens);
-#else
-            MfqCudaGuard guard(block->cuda_device);
-            block->begin_speculative(*shared, draft_tokens);
-#endif
             ++begun;
         }
     } catch (...) {
         for (std::size_t i = 0; i < begun; ++i) {
             try {
-#ifdef TYLOINFER_NATIVE_CUDA
                 auto& block = *model_.blocks[i];
                 block.attention->commit_speculative(shared->layers.at(static_cast<std::size_t>(block.layer)).attention);
-#else
-                MfqCudaGuard guard(model_.blocks[i]->cuda_device);
-                model_.blocks[i]->commit_speculative(*shared);
-#endif
             } catch (...) {
             }
         }
@@ -299,12 +246,7 @@ void State::commit_speculative() {
     using tyloi::models::require_model;
     require_model(speculative_start >= 0, "no speculative transaction");
     for (auto& block : model_.blocks) {
-#ifdef TYLOINFER_NATIVE_CUDA
         block->attention->commit_speculative(shared->layers.at(static_cast<std::size_t>(block->layer)).attention);
-#else
-        MfqCudaGuard guard(block->cuda_device);
-        block->commit_speculative(*shared);
-#endif
     }
     if (shared->engram_hash) shared->engram_hash->commit_speculative();
     speculative_start = -1;
@@ -316,11 +258,7 @@ void State::rollback_speculative(std::int64_t accepted) {
     require_model(speculative_start >= 0 && accepted >= 0, "no speculative transaction");
     const auto keep = speculative_start + speculative_confirmed + accepted;
     for (auto& block : model_.blocks) {
-#ifdef TYLOINFER_NATIVE_CUDA
         block->attention->rollback_speculative(shared->layers.at(static_cast<std::size_t>(block->layer)).attention, keep);
-#else
-        block->rollback_speculative(*shared, keep);
-#endif
     }
     TYLOINFER_RUNTIME_CHECK(shared->engram_hash, "DeepSeek-V4.1 Engram state is unavailable");
     shared->engram_hash->rollback_speculative(keep);
@@ -359,41 +297,21 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     layers.reserve(model_.blocks.size());
     for(const auto& item:model_.blocks) {
         const Block& block=*item;
-#ifndef TYLOINFER_NATIVE_CUDA
-        MfqCudaGuard guard(block.cuda_device);
-#endif
         const auto& entry=shared->layers.at(static_cast<std::size_t>(block.layer));
-#ifdef TYLOINFER_NATIVE_CUDA
         const auto& source=entry.attention;
-#else
-        const auto& source=entry;
-#endif
         if(source.speculative_pending || source.position!=cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
-#ifdef TYLOINFER_NATIVE_CUDA
         const auto copy=[&](const ::tyloi::Tensor& value) -> ::tyloi::Tensor {
             if(!value.defined())return {};
             auto result=tyloi::ops::clone(value);
             state.bytes+=session_tensor_bytes(result);return result;
         };
-#else
-        const auto copy=[&](const DenseTensor& value) -> ::tyloi::Tensor {
-            if(!value.defined())return {};
-            auto result=std::make_shared<DenseTensor>(value.clone());
-            state.bytes+=session_tensor_bytes(*result);return result;
-        };
-#endif
         saved.local_kv=copy(source.local_kv);
         saved.compressed_length=source.compressed_length;saved.partial_length=source.partial_length;
         if(source.compressed_kv.defined())
-#ifdef TYLOINFER_NATIVE_CUDA
             saved.compressed_kv=copy(tyloi::ops::slice(source.compressed_kv,1,0,source.compressed_length));
         if(source.index_k.defined())saved.index_k=copy(tyloi::ops::slice(source.index_k,1,0,source.compressed_length));
-#else
-            saved.compressed_kv=copy(source.compressed_kv.narrow(1,0,source.compressed_length));
-        if(source.index_k.defined())saved.index_k=copy(source.index_k.narrow(1,0,source.compressed_length));
-#endif
         saved.partial_kv=copy(source.partial_kv);saved.partial_score=copy(source.partial_score);
         validate_layer(block,saved,state.cache_pos);
         layers.push_back(std::move(saved));
@@ -401,7 +319,6 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     return state;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 class Candidate final : public tyloi::models::Restore {
 public:
     Candidate(State& owner,const TextSessionState& snapshot)
@@ -515,47 +432,5 @@ std::unique_ptr<tyloi::models::Restore> State::prepare_restore(const TextSession
 std::vector<std::pair<tyloi::Device,std::size_t>> State::restore_growth(const TextSessionState& snapshot) const {
     return Candidate(const_cast<State&>(*this),snapshot).growth();
 }
-#else
-void State::restore_text_session_state(const TextSessionState& state) {
-    const auto* snapshot=std::get_if<tyloi::models::deepseek_v41::Snapshot>(&state.payload);
-    if(text_session_state_kind()!=TextSessionStateKind::DeepseekV41 || !snapshot ||
-            snapshot->blocks.size()!=model_.blocks.size() ||
-            state.cache_pos<=0 || state.cache_pos>model_.max_position_embeddings() ||
-            std::size_t(state.cache_pos)!=state.tokens.size() || state.decode_position_delta!=0 ||
-            !snapshot->engram || snapshot->engram->batch!=1 ||
-            snapshot->engram->position!=state.cache_pos)
-        throw CudaSessionStateError("DeepSeek-V4.1 text session state is incompatible");
-    // Validate every layer and rolling n-gram before changing the active cache.
-    auto hash=*shared->engram_hash;
-    hash.restore(*snapshot->engram);
-    for(std::size_t i=0;i<snapshot->blocks.size();++i)
-        validate_layer(*model_.blocks[i],snapshot->blocks[i],state.cache_pos);
-    reset(1);
-    for(std::size_t i=0;i<snapshot->blocks.size();++i) {
-        Block& block=*model_.blocks[i];
-        MfqCudaGuard guard(block.cuda_device);
-        const auto& saved=snapshot->blocks[i];auto& target=shared->layers.at(i);
-        auto local_kv=restore_session_tensor(target.local_kv,saved.local_kv);
-        target.local_kv=local_kv.defined()?local_kv.dense():DenseTensor{};
-        if(block.kv_source()) {
-            target.compressed_kv=restore_session_prefix_tensor(target.compressed_kv,saved.compressed_kv,1,
-                                          std::max<int64_t>(1,block.max_context/block.ratio)).dense();
-            target.index_k=restore_session_prefix_tensor(target.index_k,saved.index_k,1,
-                                          std::max<int64_t>(1,block.max_context/block.ratio)).dense();
-            if(block.ratio>1) {
-                auto partial_kv=restore_session_tensor(target.partial_kv,saved.partial_kv);
-                target.partial_kv=partial_kv.defined()?partial_kv.dense():DenseTensor{};
-                auto partial_score=restore_session_tensor(target.partial_score,saved.partial_score);
-                target.partial_score=partial_score.defined()?partial_score.dense():DenseTensor{};
-            }
-        }
-        target.position=state.cache_pos;target.compressed_length=saved.compressed_length;
-        target.partial_length=saved.partial_length;
-    }
-    *shared->engram_hash=std::move(hash);
-    set_image_mask({});
-    cache_pos=state.cache_pos;
-}
-#endif
 
 } // namespace tyloi::cuda::deepseek_v41

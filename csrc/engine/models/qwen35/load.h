@@ -31,7 +31,6 @@ struct LoadOptions {
     bool load_input_output = true;
 };
 
-#ifdef TYLOINFER_NATIVE_CUDA
 /** Load Qwen weights using an already resolved model definition and YaRN policy. */
 void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
@@ -40,23 +39,11 @@ void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<co
 void load_deferred(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
            std::string_view definition, const ::tyloi::weights::Loader& weights,
            LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options);
-#else
-/** Load Qwen weights using the configured model definition. */
-Model load(std::shared_ptr<const tyloi::ModelSource> source,
-           const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
-           tyloi::ops::YarnScaling& yarn, int& cpu_layers,
-           const LoadOptions& options);
-#endif
 
 /** Populate an already owned layer in the original weight-loading order. */
 void load_layer(Layer&, const ::tyloi::weights::Loader&, const Config&,
                 int index, const std::string& type, bool mirror_scalars = true,
                 std::string_view tensor_root = "model");
-#ifndef TYLOINFER_NATIVE_CUDA
-Layer load_layer(const ::tyloi::weights::Loader&, const Config&,
-                 int index, const std::string& type, bool mirror_scalars = true,
-                 std::string_view tensor_root = "model");
-#endif
 
 std::optional<Predictor> load_predictor(
     TransformerWeightLoader&, const Config&, tyloi::state::KvQuantization);

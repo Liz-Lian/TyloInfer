@@ -4,9 +4,7 @@
 #include "engine/models/common/mlp.h"
 #include "engine/models/common/attention.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/ffn.h"
-#endif
 #include "engine/models/source/model_graph.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/moe/load.h"
@@ -32,12 +30,10 @@ void copy_important_neuron_settings(const tyloi::cuda::Ffn& low, tyloi::cuda::Ff
 void copy_important_neuron_settings(const tyloi::models::Mlp& low, tyloi::models::Mlp& high) {
     high.swiglu_limit = low.swiglu_limit;
 }
-#ifdef TYLOINFER_NATIVE_CUDA
 void copy_important_neuron_settings(const tyloi::ops::FfnWeights& low, tyloi::ops::FfnWeights& high) {
     high.geglu = low.geglu;
     high.swiglu_limit = low.swiglu_limit;
 }
-#endif
 
 template <class Ffn>
 void load_important_branch(const tyloi::weights::Loader& weights,
@@ -97,13 +93,9 @@ bool TransformerWeightLoader::has(const std::string& name) const { return tyloi:
 ::tyloi::Tensor TransformerWeightLoader::router_parameter(const std::string& name) const {
     if(keep_quantized_router && name.ends_with("router.weight") && tyloi::require_tensor(weights.source,name).dtype=="TQ")
         return linear(name);
-#ifdef TYLOINFER_NATIVE_CUDA
     auto value = weights.tensor(name);
     auto converted = tyloi::ops::cast(value, ::tyloi::kFloat32);
     return tyloi::ops::contiguous(converted);
-#else
-    return std::make_shared<::tyloi::DenseTensor>(dense(name).to(::tyloi::kFloat32).contiguous());
-#endif
 }
 std::vector<::tyloi::Tensor> TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
     return weights.group(names);
@@ -140,13 +132,11 @@ void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermed
     load_important_branch(weights, hidden, intermediate, ffn, false,
         down, gate, up);
 }
-#ifdef TYLOINFER_NATIVE_CUDA
 void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate,
     tyloi::ops::FfnWeights& ffn, const std::string& down, const std::string& gate,
     const std::string& up) const {
     load_important_branch(weights, hidden, intermediate, ffn, ffn.is_moe, down, gate, up);
 }
-#endif
 namespace {
 template <class Ffn>
 void load_experts(const TransformerWeightLoader& loader, Ffn& ffn, tyloi::models::ExpertProjection projection,
@@ -201,12 +191,10 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
                                      const std::string& name, int layer) const {
     load_experts(*this, ffn, projection, name, layer);
 }
-#ifdef TYLOINFER_NATIVE_CUDA
 void TransformerWeightLoader::experts(tyloi::ops::FfnWeights& ffn, tyloi::models::ExpertProjection projection,
                                      const std::string& name, int layer) const {
     load_experts(*this, ffn, projection, name, layer);
 }
-#endif
 ::tyloi::Tensor TransformerWeightLoader::headwise(const std::string& name) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
@@ -251,7 +239,6 @@ void load_moe_weights_into(tyloi::cuda::Ffn& result, const tyloi::weights::Loade
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
     load_moe(result, weights, prefix, options);
 }
-#ifdef TYLOINFER_NATIVE_CUDA
 tyloi::ops::FfnWeights load_moe_data(const tyloi::weights::Loader& weights,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
     tyloi::ops::FfnWeights result;
@@ -263,7 +250,6 @@ void load_moe_data_into(tyloi::ops::FfnWeights& result, const tyloi::weights::Lo
     load_moe(result, weights, prefix, options);
     result.target=tyloi::Device(tyloi::kCUDA,weights.placement.device);
 }
-#endif
 
 namespace tyloi::cuda {
 

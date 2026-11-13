@@ -2,9 +2,7 @@
 
 #include "engine/models/glm_dsa/config.h"
 #include "engine/models/metadata.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
-#endif
 #include "engine/models/metadata.h"
 #include "engine/models/source.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
@@ -24,11 +22,7 @@ struct Layer {
     int layer = -1;
     bool full_indexer = false;
     int device = 0;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
-#else
-    DenseTensor attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
-#endif
     std::vector<::tyloi::Tensor> input_proj, q_proj;
     ::tyloi::Tensor embed_q, unembed_out;
     ::tyloi::Tensor o_proj;
@@ -36,11 +30,8 @@ struct Layer {
 };
 
 struct Model
-#ifdef TYLOINFER_NATIVE_CUDA
     : tyloi::models::CausalModel
-#endif
 {
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Return model dimensions and execution capabilities. */
     tyloi::models::Info info() const override;
     /** Return the capabilities of the assembled text model. */
@@ -63,25 +54,15 @@ struct Model
     /** Run a model step against state created by this model. */
     ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
         const tyloi::models::ForwardOptions& options = {}) const override;
-#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     ::tyloi::models::Plan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     ::tyloi::Tensor embed, lm_head;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor output_norm;
-#else
-    DenseTensor output_norm;
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::RopeTable rope;
     std::unordered_map<int, tyloi::ops::RopeTable> device_ropes;
-#else
-    RopeCache rope;
-    std::unordered_map<int, RopeCache> device_ropes;
-#endif
     std::vector<Layer> layers;
 };
 } // namespace tyloi::cuda::glm_dsa

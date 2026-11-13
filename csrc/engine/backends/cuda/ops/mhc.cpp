@@ -1,5 +1,4 @@
 #include "engine/ops/mhc.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/kernels/deepseek_v41.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "backend.h"
@@ -50,4 +49,3 @@ Tensor mhc_expand(const Tensor& branch, const Tensor& residual, const MhcResult&
     return result;
 }
 } // namespace tyloi::ops
-#endif

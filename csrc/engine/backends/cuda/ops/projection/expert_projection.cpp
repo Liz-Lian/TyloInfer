@@ -3,12 +3,10 @@
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/native/collectives.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/ops.h"
-#endif
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/backends/cuda/ops/ffn/mfe.h"
@@ -195,7 +193,6 @@ DenseTensor Projector::run(const TqMoeBanks& banks, DenseTensor input, DenseTens
 
 } // namespace tyloi::cuda
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::ops {
 namespace {
 
@@ -264,4 +261,3 @@ tyloi::Tensor tyloi::ops::moe(const Tensor& input, const Tensor& ids, const Tens
     const auto routed = experts(input, ids, weights, gate_up, down, width).dense();
     return routed + shared_output;
 }
-#endif

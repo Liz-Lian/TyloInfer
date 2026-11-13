@@ -2,21 +2,12 @@
 
 #include "engine/models/qwen35/config.h"
 #include "engine/models/metadata.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
 #include "engine/ops/ffn.h"
 #include "engine/ops/linear.h"
-#else
-#include "engine/backends/cuda/ops/ffn/ffn.h"
-#endif
 #include "engine/models/source/model_graph.h"
 #include "engine/models/metadata.h"
 #include "engine/models/common/attention.h"
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/backends/cuda/ops/attention/linear.h"
-#include "engine/backends/cuda/ops/projection/quant_linear.h"
-#include "engine/backends/cuda/ops/rope/rope.h"
-#endif
 #include "engine/models/source.h"
 
 #include <cstdint>
@@ -27,38 +18,22 @@
 
 namespace tyloi::cuda::qwen35 {
 
-#ifdef TYLOINFER_NATIVE_CUDA
 struct Components;
-#endif
 
 using DenseTensor = ::tyloi::DenseTensor;
 using Config = tyloi::models::qwen35::Config;
 
 struct Full {
     FullAttention attention;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor ffn_norm;
-#else
-    DenseTensor ffn_norm;
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::FfnWeights ffn;
-#else
-    Ffn ffn;
-#endif
 };
 
 struct Linear {
-#ifdef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<tyloi::ops::Linear> attention;
     tyloi::ops::LinearConfig geometry;
     ::tyloi::Tensor ffn_norm;
     tyloi::ops::FfnWeights ffn;
-#else
-    LinearAttention attention;
-    DenseTensor ffn_norm;
-    Ffn ffn;
-#endif
 };
 
 struct Layer {
@@ -68,11 +43,8 @@ struct Layer {
 };
 
 struct Model
-#ifdef TYLOINFER_NATIVE_CUDA
     : tyloi::models::CausalModel
-#endif
 {
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Create an empty movable model before its weights are loaded. */
     Model();
     ~Model() override;
@@ -80,29 +52,17 @@ struct Model
     Model& operator=(Model&&) noexcept;
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
-#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     ::tyloi::models::Plan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::RopeTable rope, cpu_rope;
     std::unordered_map<int, tyloi::ops::RopeTable> device_ropes;
-#else
-    RopeCache rope;
-    RopeCache cpu_rope;
-    std::unordered_map<int, RopeCache> device_ropes;
-#endif
     ::tyloi::Tensor embed;
     ::tyloi::Tensor lm_head;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor output_norm;
-#else
-    DenseTensor output_norm;
-#endif
     std::vector<Layer> layers;
-#ifdef TYLOINFER_NATIVE_CUDA
     int primary_device = 0;
     int cpu_layers = 0;
     bool transposed = false;
@@ -135,7 +95,6 @@ struct Model
     /** Execute a request step using state created by this model. */
     ::tyloi::Tensor forward(tyloi::models::Input, tyloi::models::State&,
                             const tyloi::models::ForwardOptions& = {}) const override;
-#endif
 };
 
 } // namespace tyloi::cuda::qwen35

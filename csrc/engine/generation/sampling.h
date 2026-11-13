@@ -1,10 +1,8 @@
 #pragma once
 
 #include "engine/requests/constraint.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #include "engine/requests/sampling.h"
-#endif
 
 #include <cstdint>
 #include <algorithm>
@@ -73,7 +71,6 @@ std::int64_t sample_top_k_top_p(std::span<const float> logits, std::int64_t top_
     return kept_indices.back();
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 class Sampler {
 public:
     using Params = MfqSamplingParams;
@@ -144,123 +141,5 @@ inline Tensor sample_logits(Sampler& sampler, Tensor logits, const Tensor& count
         token_constraint->accept(ops::item(next));
     return next;
 }
-#else
-// Ops supplies:
-//   using DenseTensor;
-//   using Params;
-//   DenseTensor sample_greedy(DenseTensor);
-//   DenseTensor sample_stochastic(DenseTensor, float random, const Params&);
-//   DenseTensor apply_penalties(DenseTensor, const DenseTensor& counts, const Params&);
-// DenseTensor arguments are consumed, so an Ops implementation may update them in
-// place. Callers that still need the original tensor must clone it first.
-template <typename Ops>
-class Sampler {
-public:
-    using DenseTensor = typename Ops::DenseTensor;
-    using Params = typename Ops::Params;
-
-    explicit Sampler(Params params = Params{}, Ops ops = Ops{})
-        : params_(std::move(params)),
-          ops_(std::move(ops)),
-          rng_(params_.seed) {
-        if (params_.top_k < 0) {
-            throw std::invalid_argument("top_k must be non-negative");
-        }
-    }
-
-    const Params& params() const noexcept {
-        return params_;
-    }
-
-    Ops& ops() noexcept {
-        return ops_;
-    }
-
-    const Ops& ops() const noexcept {
-        return ops_;
-    }
-
-    bool greedy() const noexcept {
-        return params_.temperature <= 0.0 || params_.top_k == 1;
-    }
-
-    bool has_penalties() const noexcept {
-        return params_.presence_penalty != 0.0 ||
-            params_.frequency_penalty != 0.0 ||
-            params_.repetition_penalty != 1.0;
-    }
-
-    void reset_seed(std::uint64_t seed) {
-        params_.seed = seed;
-        rng_.seed(seed);
-    }
-
-    void discard_random(std::uint64_t draws) {
-        rng_.discard(draws);
-    }
-
-    float next_uniform_float() {
-        std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
-        return uniform(rng_);
-    }
-
-    DenseTensor sample(DenseTensor logits) {
-        if (greedy()) {
-            return ops_.sample_greedy(std::move(logits));
-        }
-        return ops_.sample_stochastic(
-            std::move(logits), next_uniform_float(), params_);
-    }
-
-    DenseTensor sample(DenseTensor logits, const DenseTensor& counts) {
-        if (has_penalties()) {
-            logits = apply_penalties(std::move(logits), counts);
-        }
-        return sample(std::move(logits));
-    }
-
-    DenseTensor apply_penalties(DenseTensor logits, const DenseTensor& counts) {
-        return ops_.apply_penalties(
-            std::move(logits), counts, params_);
-    }
-
-    double next_uniform() {
-        return std::generate_canonical<double, 53>(rng_);
-    }
-
-private:
-    Params params_;
-    Ops ops_;
-    std::mt19937_64 rng_;
-};
-
-template <typename Ops>
-typename Ops::DenseTensor sample_logits(
-        Sampler<Ops>& sampler,
-        typename Ops::DenseTensor logits,
-        const typename Ops::DenseTensor& counts,
-        const MfqTokenConstraintPtr& token_constraint = {}) {
-    logits = logits.contiguous().view({1, -1});
-    if (sampler.has_penalties()) {
-        logits = sampler.apply_penalties(std::move(logits), counts);
-    }
-
-    auto next = sampler.sample(logits);
-    if (token_constraint &&
-        !token_constraint->allows(next.template item<std::int64_t>())) {
-        // Keep the host mask alive until fallback token validation completes.
-        auto masked = sampler.ops().constrain(logits, token_constraint);
-        next = sampler.sample(masked.to(logits.device()));
-        if (!token_constraint->allows(next.template item<std::int64_t>())) {
-            throw std::runtime_error(
-                "CUDA constrained sampler returned an invalid token");
-        }
-    }
-    if (token_constraint) {
-        token_constraint->accept(next.template item<std::int64_t>());
-    }
-    return next;
-}
-#endif
 
 } // namespace tyloi::engine

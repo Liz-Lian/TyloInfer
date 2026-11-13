@@ -8,11 +8,7 @@
 #include "engine/models/deepseek_v41/causal_lm.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/ops.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/engram.h"
-#else
-#include "engine/backends/cuda/kernels/deepseek_v41.h"
-#endif
 
 #include <algorithm>
 #include <array>
@@ -278,7 +274,6 @@ class EngramHashState : public tyloi::models::deepseek_v41::EngramHashState {
 
 class Engram {
   public:
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Own request row transfers and in-flight numeric inputs. */
     struct State {
         std::unique_ptr<tyloi::weights::Table::State> table;
@@ -297,9 +292,6 @@ class Engram {
             input.dense()={};indices.dense()={};selected.dense()={};gathered.dense()={};
         }
     };
-#else
-    using State = tyloi::weights::Table::State;
-#endif
 
     /** Load associative-memory weights and its streamed row table. */
     static std::unique_ptr<Engram> load(const tyloi::weights::Loader& weights, const EngramConfig &config,
@@ -312,21 +304,10 @@ class Engram {
         const auto hash_layer =
             static_cast<int>(std::distance(config.engram_layer_ids.begin(), found));
         const auto prefix = "model.block." + std::to_string(layer) + ".associative_memory.";
-#ifdef TYLOINFER_NATIVE_CUDA
         auto query = weights.tensor(prefix + "query.weight");
         auto key = weights.tensor(prefix + "key.weight");
         if (query.dim() != 2 || query.size(0) != config.hc_mult || query.size(1) != config.hidden ||
             key.dim()!=2 || key.size(0)!=query.size(0) || key.size(1)!=query.size(1)) {
-#else
-        auto query = weights.tensor(prefix + "query.weight").dense()
-                         .to(::tyloi::kFloat32)
-                         .contiguous();
-        auto key = weights.tensor(prefix + "key.weight").dense()
-                       .to(::tyloi::kFloat32)
-                       .contiguous();
-        if (query.dim() != 2 || query.size(0) != config.hc_mult || query.size(1) != config.hidden ||
-            key.sizes() != query.sizes()) {
-#endif
             throw std::runtime_error("DeepSeek-V4.1 Engram query/key geometry disagrees");
         }
         auto projection = weights.weight(prefix + "projection.weight");
@@ -341,23 +322,14 @@ class Engram {
                               config.engram_num_embeddings[static_cast<std::size_t>(hash_layer)],
                               static_cast<int>(config.engram_head_dim),
                               cache_rows),
-#ifdef TYLOINFER_NATIVE_CUDA
             tyloi::ops::engram_weights(projection,query,key)));
-#else
-            std::move(projection),
-            (query * key).contiguous()));
-#endif
     }
 
     int64_t layer_id() const { return config_.engram_layer_ids[hash_layer_]; }
 
     /** Create independent row-transfer state for a request. */
     std::unique_ptr<State> make_state() const {
-#ifdef TYLOINFER_NATIVE_CUDA
         auto state=std::make_unique<State>(); state->table=table_->make_state(); return state;
-#else
-        return table_->make_state();
-#endif
     }
 
     /** Begin fetching the rows selected by the request's hashes. */
@@ -367,21 +339,13 @@ class Engram {
             if(text_rows->empty())return;
             const auto selected=select_hash_rows(hashes,*text_rows);
             table_->prefetch(
-#ifdef TYLOINFER_NATIVE_CUDA
                 *state.table,
-#else
-                state,
-#endif
                 selected.layer_data(hash_layer_),
                              std::size_t(selected.tokens)*selected.columns);
             return;
         }
         table_->prefetch(
-#ifdef TYLOINFER_NATIVE_CUDA
             *state.table,
-#else
-            state,
-#endif
             hashes.layer_data(hash_layer_),
             std::size_t(hashes.batch) * hashes.tokens * hashes.columns);
     }
@@ -390,7 +354,6 @@ class Engram {
     EngramTensor forward(State& state, const EngramTensor &hidden, const EngramHashBatch &hashes,
                          const EngramTensor& text_rows={},
                          const std::vector<int64_t>* host_rows=nullptr) const {
-#ifdef TYLOINFER_NATIVE_CUDA
         if(text_rows.defined()) {
             if(!text_rows.numel())return hidden;
             TYLOINFER_RUNTIME_CHECK(host_rows && host_rows->size()==std::size_t(text_rows.numel()),
@@ -416,41 +379,6 @@ class Engram {
         auto result=output.dense();
         state.clear();
         return result;
-#else
-        if(text_rows.defined()) {
-            if(!text_rows.numel())return hidden;
-            TYLOINFER_RUNTIME_CHECK(host_rows && host_rows->size()==std::size_t(text_rows.numel()),
-                              "DeepSeek-V4.1 Engram image participation is incomplete");
-            auto flat=hidden.reshape({1,-1,config_.hc_mult,config_.hidden});
-            auto selected=forward(state, flat.index_select(1,text_rows).contiguous(),
-                                  select_hash_rows(hashes,*host_rows));
-            auto result=flat.clone();result.index_copy_(1,text_rows,selected);
-            return result.reshape(hidden.sizes());
-        }
-        const auto batch = hashes.batch;
-        const auto tokens = hashes.tokens;
-        if (hidden.dim() != 4 || hidden.size(0) != batch || hidden.size(1) != tokens ||
-            hidden.size(2) != config_.hc_mult || hidden.size(3) != config_.hidden ||
-            hashes.layers != static_cast<int>(config_.engram_layer_ids.size()) ||
-            hashes.columns != (config_.engram_max_ngram_size - 1) * config_.engram_n_heads) {
-            throw std::invalid_argument("DeepSeek-V4.1 Engram activation geometry disagrees");
-        }
-        auto embeddings = tyloi::ops::measure("deepseek_v41.engram.rows", [&] {
-            return table_->gather(state, hashes.layer_data(hash_layer_), batch, tokens,
-                                  hashes.columns, hidden.device()).dense();
-        });
-        auto projected = tyloi::ops::measure("deepseek_v41.engram.projection", [&] {
-            return tyloi::ops::project(embeddings, projection_).dense();
-        });
-        return tyloi::ops::measure("deepseek_v41.engram.gate_add", [&] {
-            return deepseek_v41_engram_gate_add_cuda(hidden, projected.contiguous(),
-#ifdef TYLOINFER_NATIVE_CUDA
-                                                       query_key_weight_.dense(), config_.rms_eps);
-#else
-                                                       query_key_weight_, config_.rms_eps);
-#endif
-        });
-#endif
     }
 
   private:
@@ -469,25 +397,14 @@ class Engram {
         return selected;
     }
     Engram(EngramConfig config, int hash_layer, std::shared_ptr<tyloi::weights::Table> table,
-#ifdef TYLOINFER_NATIVE_CUDA
            tyloi::ops::EngramWeights numeric)
         : config_(std::move(config)), hash_layer_(hash_layer), table_(std::move(table)),
           numeric_(std::move(numeric)) {}
-#else
-           ::tyloi::Tensor projection, EngramTensor query_key_weight)
-        : config_(std::move(config)), hash_layer_(hash_layer), table_(std::move(table)),
-          projection_(std::move(projection)), query_key_weight_(std::move(query_key_weight)) {}
-#endif
 
     EngramConfig config_;
     int hash_layer_ = -1;
     std::shared_ptr<tyloi::weights::Table> table_;
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::EngramWeights numeric_;
-#else
-    ::tyloi::Tensor projection_;
-    EngramTensor query_key_weight_;
-#endif
 };
 
 } // namespace tyloi::cuda::deepseek_v41_runtime

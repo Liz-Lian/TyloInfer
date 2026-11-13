@@ -2,9 +2,7 @@
 #include "engine/models/load.h"
 #include "engine/ops.h"
 #include "engine/models/qwen35/load.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/components.h"
-#endif
 
 #include "backend.h"
 #include "engine/models/qwen35/metadata.h"
@@ -29,11 +27,7 @@ namespace tyloi::cuda::qwen35 {
 namespace {
 
 struct LayerLoader : TransformerWeightLoader {
-#ifdef TYLOINFER_NATIVE_CUDA
     using Ffn = tyloi::ops::FfnWeights;
-#else
-    using Ffn = tyloi::cuda::Ffn;
-#endif
     bool mirror_scalars = true;
     using DenseTensor = ::tyloi::DenseTensor;
 
@@ -41,7 +35,6 @@ struct LayerLoader : TransformerWeightLoader {
         return ::tyloi::cuda::log(-value);
     }
 
-#ifdef TYLOINFER_NATIVE_CUDA
     void load_linear_attention(tyloi::ops::LinearWeights& attention, tyloi::ops::LinearConfig& policy,
                                const Config& config, int layer, std::string_view tensor_root) const {
         const auto prefix = std::string(tensor_root) + ".block." + std::to_string(layer) + ".";
@@ -96,119 +89,6 @@ struct LayerLoader : TransformerWeightLoader {
                 throw std::runtime_error("dense linear_attention output projection must be 2D");
         }
     }
-#else
-    void linear_projections(LinearAttention& attention,
-                            const tyloi::models::qwen35::LinearWeightNames& names,
-                            bool split_qkv) const {
-#ifndef TYLOINFER_NATIVE_CUDA
-        attention.grouped_weights = weights.options.grouped;
-#endif
-        if (split_qkv) {
-            attention.split_in_proj = true;
-            attention.qkv_proj = weights.group({names.qk, names.value});
-            if (is_quant_dtype(require_tensor(weights.source, names.gate).dtype)) {
-                attention.z_proj = weights.weight(names.gate);
-                const bool alpha_quant = is_quant_dtype(require_tensor(weights.source, names.alpha).dtype);
-                const bool beta_quant = is_quant_dtype(require_tensor(weights.source, names.beta).dtype);
-                if (alpha_quant != beta_quant)
-                    throw std::runtime_error(
-                        "linear_attn alpha/beta must use the same storage kind");
-                attention.ab_is_nint = alpha_quant;
-                if (attention.ab_is_nint) {
-                    const auto scalar_axis =
-                        mirror_scalars
-                            ? std::optional<TensorParallelAxis>(TensorParallelAxis::Mirrored)
-                            : std::nullopt;
-                    if (mirror_scalars && weights.placement.tensor.enabled()) {
-                        attention.ab_nint_proj = {
-                            weights.weight(names.alpha, scalar_axis),
-                            weights.weight(names.beta, scalar_axis)};
-                    } else {
-                        attention.ab_nint_proj = weights.group({names.alpha, names.beta});
-                    }
-                } else {
-                    attention.ab_proj = make_dense_group({
-                        weights.tensor(names.alpha),
-                        weights.tensor(names.beta)});
-                }
-            } else {
-                attention.split_dense_zab = true;
-                attention.zab_proj = make_dense_group({
-                    weights.tensor(names.gate),
-                    weights.tensor(names.alpha),
-                    weights.tensor(names.beta)});
-            }
-            return;
-        }
-
-        const bool alpha_quant = is_quant_dtype(require_tensor(weights.source, names.alpha).dtype);
-        const bool beta_quant = is_quant_dtype(require_tensor(weights.source, names.beta).dtype);
-        if (alpha_quant != beta_quant)
-            throw std::runtime_error(
-                "linear_attention alpha/beta must use the same storage kind");
-        if (alpha_quant) {
-            attention.in_proj = weights.group({names.qkv, names.gate, names.alpha, names.beta});
-        } else {
-            attention.dense_ab_tail = true;
-            attention.in_proj = weights.group({names.qkv, names.gate});
-            attention.ab_proj = make_dense_group({
-                weights.tensor(names.alpha),
-                weights.tensor(names.beta)});
-        }
-    }
-
-    void linear_output(LinearAttention& attention, const std::string& name) const {
-        if (is_quant_dtype(require_tensor(weights.source, name).dtype)) {
-            attention.out_proj = weights.weight(name);
-        } else {
-            attention.dense_out_proj = true;
-#ifdef TYLOINFER_NATIVE_CUDA
-            attention.out_proj_dense = weights.tensor(name);
-            if (require_tensor(weights.source, name).dtype == "F16")
-                attention.out_proj_dense = std::make_shared<DenseTensor>(
-                    attention.out_proj_dense.dense()
-                        .to(::tyloi::kFloat16).contiguous());
-            if (attention.out_proj_dense.dim() != 2)
-#else
-            attention.out_proj_dense = weights.tensor(name).dense();
-            if (require_tensor(weights.source, name).dtype == "F16")
-                attention.out_proj_dense =
-                    attention.out_proj_dense.to(::tyloi::kFloat16).contiguous();
-            if (attention.out_proj_dense.dim() != 2)
-#endif
-                throw std::runtime_error(
-                    "dense linear_attention output projection must be 2D");
-        }
-    }
-
-    void load_linear_attention(LinearAttention& attention, const Config& config,
-                               int layer, std::string_view tensor_root) const {
-        const auto prefix = std::string(tensor_root) + ".block." + std::to_string(layer) + ".";
-        const auto linear = prefix + "linear_attention.";
-        tyloi::models::qwen35::LinearWeightNames names{
-            linear + "qkv.weight", linear + "qk.weight", linear + "value.weight",
-            linear + "gate.weight", linear + "alpha.weight", linear + "beta.weight"};
-        linear_projections(attention, names, has(names.qk) && has(names.value));
-#ifdef TYLOINFER_NATIVE_CUDA
-        attention.conv_weight = weights.tensor(linear + "conv.weight");
-        if (has(linear + "conv.bias")) attention.conv_bias = weights.tensor(linear + "conv.bias");
-        attention.dt_bias = weights.tensor(linear + "dt_bias");
-        auto a = weights.tensor(linear + "a");
-        attention.a_log = config.legacy_tensor_layout.linear_attention_a_is_log
-            ? a : std::make_shared<DenseTensor>(log_negative(a.dense()));
-        attention.linear_norm = weights.tensor(linear + "norm.weight");
-#else
-        attention.conv_weight = dense(linear + "conv.weight");
-        if (has(linear + "conv.bias")) attention.conv_bias = dense(linear + "conv.bias");
-        attention.dt_bias = dense(linear + "dt_bias");
-        auto a = dense(linear + "a");
-        attention.a_log = config.legacy_tensor_layout.linear_attention_a_is_log
-            ? a : log_negative(a);
-        attention.linear_norm = dense(linear + "norm.weight");
-#endif
-        linear_output(attention, linear + "output.weight");
-    }
-#endif
 };
 
 } // namespace
@@ -235,17 +115,11 @@ void load_layer(Layer& result, const ::tyloi::weights::Loader& weights, const Co
             config.attention_output_gate);
         full.attention.attention_rotary_dim = config.rotary_dim;
         full.attention.no_rope = config.positional_encoding == tyloi::models::PositionalEncoding::none;
-#ifdef TYLOINFER_NATIVE_CUDA
         full.ffn_norm = weights.tensor(std::string(tensor_root) + ".block." +
                                        std::to_string(index) + ".mlp.norm.weight");
-#else
-        full.ffn_norm = loader.dense(std::string(tensor_root) + ".block." +
-                                     std::to_string(index) + ".mlp.norm.weight");
-#endif
         full.ffn = tyloi::models::qwen35::load_ffn<LayerLoader::Ffn>(loader, config, index, tensor_root);
     } else {
         auto& linear = result.weights.emplace<Linear>();
-#ifdef TYLOINFER_NATIVE_CUDA
         auto& geometry = linear.geometry;
         geometry.key_heads = config.linear_num_key_heads;
         geometry.value_heads = config.linear_num_value_heads;
@@ -262,43 +136,11 @@ void load_layer(Layer& result, const ::tyloi::weights::Loader& weights, const Co
         linear.ffn_norm = weights.tensor(prefix + "mlp.norm.weight");
         loader.load_linear_attention(attention, geometry, config, index, tensor_root);
         linear.attention = std::make_unique<tyloi::ops::Linear>(std::move(attention), geometry);
-#else
-        linear.attention.key_heads = config.linear_num_key_heads;
-        linear.attention.value_heads = config.linear_num_value_heads;
-        linear.attention.key_dim = config.linear_key_head_dim;
-        linear.attention.value_dim = config.linear_value_head_dim;
-        linear.attention.conv_kernel = config.linear_conv_kernel_dim;
-        linear.attention.rms_norm_eps = config.rms_norm_eps;
-        linear.attention.norm_weight_offset = config.legacy_tensor_layout.norm_weight_offset;
-        linear.attention.tiled_v_heads = config.legacy_tensor_layout.qwen_gdn_gguf_layout;
-        const auto prefix = std::string(tensor_root) + ".block." + std::to_string(index) + ".";
-#ifdef TYLOINFER_NATIVE_CUDA
-        linear.attention.attn_norm = weights.tensor(prefix + "attention.norm.weight");
-#else
-        linear.attention.attn_norm = loader.dense(prefix + "attention.norm.weight");
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
-        linear.ffn_norm = weights.tensor(prefix + "mlp.norm.weight");
-#else
-        linear.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
-#endif
-        loader.load_linear_attention(linear.attention, config, index, tensor_root);
-#endif
         linear.ffn = tyloi::models::qwen35::load_ffn<LayerLoader::Ffn>(loader, config, index, tensor_root);
     }
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA
-Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
-                 int index, const std::string& type, bool mirror_scalars,
-                 std::string_view tensor_root) {
-    Layer result;
-    load_layer(result, weights, config, index, type, mirror_scalars, tensor_root);
-    return result;
-}
-#endif
 
-#ifdef TYLOINFER_NATIVE_CUDA
 static void load_impl(Model& model, std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
            const tyloi::models::LoadOptions& policy, bool deferred) {
@@ -307,16 +149,7 @@ static void load_impl(Model& model, std::shared_ptr<const tyloi::ModelSource> so
         .load_layers = !deferred, .load_input_output = !deferred};
     auto yarn = policy.yarn;
     int cpu_layers = 0;
-#else
-Model load(std::shared_ptr<const tyloi::ModelSource> source,
-           const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
-           tyloi::ops::YarnScaling& yarn, int& cpu_layers,
-           const LoadOptions& options) {
-#endif
     tyloi::cuda::validate_model_source(*source);
-#ifndef TYLOINFER_NATIVE_CUDA
-    Model model;
-#endif
     model.source = std::move(source);
     const auto& source_ref = *model.source;
     model.graph = tyloi::models::graph(source_ref);
@@ -324,11 +157,6 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     if (model.graph.component("vision") != nullptr &&
         model.plan.vision != ::tyloi::models::Vision::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
-#ifndef TYLOINFER_NATIVE_CUDA
-    auto definition = tyloi::models::config_json(source_ref, options.config_path);
-    definition = tyloi::cuda::configure_yarn(yarn, options.extend_yarn, std::move(definition),
-                                           model.graph.backbone, options.context_size);
-#endif
     if (model.graph.backbone != "qwen3_5" && model.graph.backbone != "generic_qwen")
         throw std::runtime_error("Qwen3.5 loading requires a Qwen-compatible model graph");
     model.config = Config::from_json(definition, model.graph);
@@ -377,11 +205,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
                            model.metadata.rope_interleaved, yarn);
             rope.configure_mrope(config.mrope_sections, config.mrope_interleaved,
                                  config.rotary_dim, device);
-#ifdef TYLOINFER_NATIVE_CUDA
             return rope.view();
-#else
-            return rope;
-#endif
         };
         const auto primary = ::tyloi::Device(
             ::tyloi::kCUDA, weights.placement.device);
@@ -401,11 +225,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
         const auto output_name = std::string("model.output.weight");
         const bool independent_output = !config.tie_word_embeddings && weights.has(output_name);
         model.embed = weights.embedding("model.token_embedding.weight", independent_output);
-#ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
-#else
-        model.output_norm = weights.tensor("model.output_norm.weight").dense();
-#endif
         if (config.tie_word_embeddings || !weights.has(output_name)) {
             model.lm_head = weights.placement.tensor.enabled()
                 ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
@@ -429,25 +249,16 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     } else {
         if (options.load_layers)
             throw std::invalid_argument("streamed model setup requires deferred layers");
-#ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
-#else
-        model.output_norm = weights.tensor("model.output_norm.weight").dense();
-#endif
     }
-#ifdef TYLOINFER_NATIVE_CUDA
     model.primary_device = weights.placement.device;
     model.cpu_layers = cpu_layers;
     model.transposed = policy.transposed;
     if (!deferred) model.components = std::make_unique<Components>(Components::load(model, weights, placement,
         cpu_layers, policy.optional_components, !policy.cpu_offload_layers.empty(), policy.transfer_auto));
     return;
-#else
-    return model;
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
            std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
@@ -461,7 +272,6 @@ void load_deferred(Model& model, std::shared_ptr<const tyloi::ModelSource> sourc
            LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options) {
     load_impl(model, std::move(source), definition, weights, placement, options, true);
 }
-#endif
 
 std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
                                          const Config& config,
@@ -479,15 +289,9 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
         "Qwen MTP requires declared predictor layers and shared embeddings");
     Predictor model;
     model.config = config;
-#ifdef TYLOINFER_NATIVE_CUDA
     model.hidden_norm = loader.weights.tensor("predictor.hidden_norm.weight");
     model.embedding_norm = loader.weights.tensor("predictor.embedding_norm.weight");
     model.output_norm = loader.weights.tensor("predictor.output_norm.weight");
-#else
-    model.hidden_norm = loader.dense("predictor.hidden_norm.weight");
-    model.embedding_norm = loader.dense("predictor.embedding_norm.weight");
-    model.output_norm = loader.dense("predictor.output_norm.weight");
-#endif
     model.fusion = loader.linear("predictor.fusion.weight");
     TYLOINFER_RUNTIME_CHECK(model.fusion.size(1) == 2 * config.hidden_size &&
         model.fusion.size(0) == config.hidden_size &&
@@ -502,17 +306,9 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
         layer.attention.kv_quantization = quantization;
         tyloi::models::load_attention_mixer(layer.attention, loader, config, index, prefix,
             config.legacy_tensor_layout.norm_weight_offset, config.attention_output_gate);
-#ifdef TYLOINFER_NATIVE_CUDA
         layer.ffn_norm = loader.weights.tensor(prefix + "mlp.norm.weight");
-#else
-        layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
         layer.ffn = tyloi::models::qwen35::load_ffn<tyloi::ops::FfnWeights>(loader, config, index, "predictor");
         layer.ffn.target = tyloi::Device(tyloi::kCUDA, loader.weights.placement.device);
-#else
-        layer.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, "predictor");
-#endif
         model.layers.push_back(std::move(layer));
     }
     return model;

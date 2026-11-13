@@ -4,11 +4,9 @@
 #include "engine/models/minicpmo45/config.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/models/metadata.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
 #include "engine/models/load.h"
 #include "engine/models/media.h"
-#endif
 #include "engine/models/metadata.h"
 #include "engine/models/source.h"
 
@@ -21,11 +19,8 @@ namespace tyloi::cuda::minicpmo45::text {
 using Config = tyloi::models::minicpmo45::Config;
 
 struct Model
-#ifdef TYLOINFER_NATIVE_CUDA
     : tyloi::models::CausalModel, tyloi::models::Media
-#endif
 {
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Create an empty movable model before loading weights. */
     Model();
     ~Model() override;
@@ -33,27 +28,16 @@ struct Model
     Model& operator=(Model&&) noexcept;
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
-#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     ::tyloi::models::Plan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     ::tyloi::Tensor embed, lm_head;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor output_norm;
-#else
-    DenseTensor output_norm;
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::RopeTable rope, cpu_rope;
     std::unordered_map<int, tyloi::ops::RopeTable> device_ropes;
-#else
-    RopeCache rope, cpu_rope;
-    std::unordered_map<int, RopeCache> device_ropes;
-#endif
     std::vector<Layer> layers;
-#ifdef TYLOINFER_NATIVE_CUDA
     int primary_device = 0, cpu_layers = 0;
     std::unique_ptr<::tyloi::cuda::minicpmo45::Components> components;
     /** Describe model dimensions and execution capabilities. */
@@ -90,6 +74,5 @@ struct Model
     /** Run a request step with explicit input and numerical policy. */
     Tensor forward(tyloi::models::Input, tyloi::models::State&,
                    const tyloi::models::ForwardOptions& = {}) const override;
-#endif
 };
 } // namespace tyloi::cuda::minicpmo45::text

@@ -592,7 +592,6 @@ void MoeExpertCache::initialize_ssd_residency() {
     pipeline_ram_complement_=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty(
         {0},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8)));
     pipeline_ram_registered_bytes_=0;
-#ifdef TYLOINFER_NATIVE_CUDA
     if(options_.policy.direct_ram) {
         std::size_t pinned=host_experts_->stats().budget_bytes;
         if(const auto available=tyloi::cuda::shared_memory_available(mfq_current_cuda_device())) {
@@ -638,7 +637,6 @@ void MoeExpertCache::initialize_ssd_residency() {
             for(const auto& source:sources_)source->quant_source_->bind_pinned_arena(pinned_expert_arena_);
         }
     }
-#endif
     pipeline_prefill_layer_layout_=false;
     for(const auto& source:sources_) {
         source->quant_source_->mark_preload_complete(false);
@@ -996,7 +994,6 @@ MoePrefillWorkspaceBudget MoeExpertCache::prefill_workspace_budget(bool allow_bo
 
 std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     const MfqCudaGuard guard(owner_device_);
-#ifdef TYLOINFER_NATIVE_CUDA
     if(prefill_loan_)throw std::logic_error("prefill workspace loan is already active");
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
     const bool force=option && std::string_view(option)=="force";
@@ -1218,20 +1215,14 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
         <<" metadata_ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-backup_complete).count()
         <<" transfer_bytes="<<prefill_transfer_bytes()<<'\n';
     return prefill_loan_->bytes;
-#else
-    return 0;
-#endif
 }
 
 void MoeExpertCache::suspend_prefill_loan() {
     const MfqCudaGuard guard(owner_device_);
-#ifdef TYLOINFER_NATIVE_CUDA
     if(prefill_loan_)tyloi::cuda::default_context(mfq_current_cuda_device())->suspend_workspace_loan();
-#endif
 }
 void MoeExpertCache::end_prefill_loan() {
     const MfqCudaGuard guard(owner_device_);
-#ifdef TYLOINFER_NATIVE_CUDA
     if(!prefill_loan_)return;
     const auto restore_started=std::chrono::steady_clock::now();
     suspend_prefill_loan();
@@ -1272,7 +1263,6 @@ void MoeExpertCache::end_prefill_loan() {
         <<" restore_ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-restore_started).count()
         <<" restore_copy_ms="<<std::chrono::duration<double,std::milli>(copies_restored-restore_started).count()
         <<" cleanup_ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copies_restored).count()<<'\n';
-#endif
 }
 
 struct tyloi::weights::Loan::Impl {
@@ -1719,9 +1709,7 @@ std::uint64_t MoeExpertCache::expert_disk_reads_after_preload() const {
 }
 
 std::pair<std::size_t,std::size_t> MoeExpertCache::pinned_expert_memory() const {
-#ifdef TYLOINFER_NATIVE_CUDA
     if(pinned_expert_arena_)return {pinned_expert_arena_->bytes(),pinned_expert_arena_->used_bytes()};
-#endif
     return {};
 }
 

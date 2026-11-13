@@ -1,15 +1,12 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/profile.h"
-#endif
 
 #include <algorithm>
 #include <exception>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 DecodeGraphBranchScope::DecodeGraphBranchScope()
     : setting(tyloi::cuda::Executor::current().mode().ffn.serial), previous(setting) {
     auto mode = tyloi::cuda::Executor::current_ffn();
@@ -18,11 +15,9 @@ DecodeGraphBranchScope::DecodeGraphBranchScope()
     setting = true;
 }
 DecodeGraphBranchScope::~DecodeGraphBranchScope() { setting = previous; }
-#endif
 
 namespace {
 
-#ifdef TYLOINFER_NATIVE_CUDA
 const ::tyloi::DenseTensor& dense(const ::tyloi::Tensor& tensor) {
     const auto* result = tensor.representation<::tyloi::DenseTensor>();
     TYLOINFER_RUNTIME_CHECK(result, "decode graph requires a dense tensor");
@@ -51,38 +46,10 @@ bool same_tensor_layout(const ::tyloi::DenseTensor& expected,
             expected.stride(dimension) != candidate.stride(dimension)) return false;
     return true;
 }
-#else
-bool same_tensor_layout(const ::tyloi::DenseTensor& expected,
-                        const ::tyloi::DenseTensor& candidate) {
-    if (expected.defined() != candidate.defined()) return false;
-    if (!expected.defined()) return true;
-    if (expected.data_ptr() != candidate.data_ptr() ||
-        expected.device() != candidate.device() ||
-        expected.scalar_type() != candidate.scalar_type() ||
-        expected.dim() != candidate.dim())
-        return false;
-    for (std::int64_t dimension = 0; dimension < expected.dim(); ++dimension) {
-        if (expected.size(dimension) != candidate.size(dimension) ||
-            expected.stride(dimension) != candidate.stride(dimension))
-            return false;
-    }
-    return true;
-}
-#endif
 
-#ifndef TYLOINFER_NATIVE_CUDA
-bool same_storage(const std::vector<::tyloi::DenseTensor>& expected,
-                  const std::vector<::tyloi::DenseTensor>& candidate) {
-    if (expected.size() != candidate.size()) return false;
-    for (std::size_t index = 0; index < expected.size(); ++index)
-        if (!same_tensor_layout(expected[index], candidate[index])) return false;
-    return true;
-}
-#endif
 
 } // namespace
 
-#ifdef TYLOINFER_NATIVE_CUDA
 decode_graph_detail::Layout decode_graph_detail::snapshot_layout(
         const ::tyloi::Tensor& tensor) {
     Layout result;
@@ -129,7 +96,6 @@ bool same_storage(const std::vector<std::optional<decode_graph_detail::Layout>>&
     return true;
 }
 }
-#endif
 
 std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
         const MfqCudaStream& primary_stream,
@@ -172,7 +138,6 @@ activate_cuda_graph_compute_streams(
     return guards;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 class ExecutionGraph final : public tyloi::Executor::Graph {
     struct Scope final : tyloi::Executor::Scope {
@@ -276,7 +241,6 @@ std::unique_ptr<tyloi::Executor::Graph> tyloi::cuda::Executor::graph() {
     if (!default_context(primary_)->supports_async_allocations()) return nullptr;
     return std::make_unique<ExecutionGraph>(*this, primary_);
 }
-#endif
 
 DecodeGraphCache::DecodeGraphCache(int64_t context_capacity)
     : stream(mfq_get_stream_from_pool(false)),
@@ -296,17 +260,9 @@ std::vector<MfqCudaStream> DecodeGraphCache::graph_participant_streams(
 bool DecodeGraphCache::matches(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-#ifdef TYLOINFER_NATIVE_CUDA
         const std::vector<::tyloi::Tensor>& candidate_storage) const {
-#else
-        const std::vector<::tyloi::DenseTensor>& candidate_storage) const {
-#endif
     return valid && planned_len == candidate_len && greedy == candidate_greedy &&
-#ifdef TYLOINFER_NATIVE_CUDA
            same_storage(storage_layout, candidate_storage) &&
-#else
-           same_storage(storage, candidate_storage) &&
-#endif
            (candidate_greedy ||
             (temperature == sampling.temperature && top_k == sampling.top_k &&
              top_p == sampling.top_p)) &&
@@ -317,7 +273,6 @@ bool DecodeGraphCache::matches(
 
 void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
     auto i64 = ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
-#ifdef TYLOINFER_NATIVE_CUDA
     if (!static_input || !static_input.defined()) static_input = std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({1, 1}, i64));
     if (!static_pos || !static_pos.defined()) static_pos = std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({1}, i64));
     if (!static_len || !static_len.defined()) static_len = std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({1}, i64));
@@ -327,24 +282,8 @@ void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
         {1}, ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(::tyloi::kCUDA)));
     if (!counts || !counts.defined()) counts = std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty(
         {vocab_size}, ::tyloi::TensorOptions().dtype(::tyloi::kInt32).device(::tyloi::kCUDA)));
-#else
-    if (!static_input.defined()) static_input = ::tyloi::cuda::empty({1, 1}, i64);
-    if (!static_pos.defined()) static_pos = ::tyloi::cuda::empty({1}, i64);
-    if (!static_len.defined()) static_len = ::tyloi::cuda::empty({1}, i64);
-    if (!static_step.defined()) static_step = ::tyloi::cuda::empty({1}, i64);
-    if (!generated.defined()) generated = ::tyloi::cuda::empty({generated_capacity}, i64);
-    if (!random.defined()) {
-        random = ::tyloi::cuda::empty(
-            {1}, ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(::tyloi::kCUDA));
-    }
-    if (!counts.defined()) {
-        counts = ::tyloi::cuda::empty(
-            {vocab_size}, ::tyloi::TensorOptions().dtype(::tyloi::kInt32).device(::tyloi::kCUDA));
-    }
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 void DecodeGraphCache::initialize_inputs(
         const ::tyloi::Tensor& pending, int64_t position,
         ::tyloi::Tensor& random_host) {
@@ -376,73 +315,20 @@ void DecodeGraphCache::capture_next(::tyloi::Tensor next) {
     decode_graph_commit_cuda(dense(static_next), dense(generated), dense(static_step),
                              dense(static_input), dense(static_pos), dense(static_len));
 }
-#else
-void DecodeGraphCache::initialize_inputs(
-        const ::tyloi::DenseTensor& pending, int64_t position,
-        const ::tyloi::DenseTensor& random_host) {
-    cudaStream_t graph_stream = stream.stream();
-    std::int64_t length = position + 1;
-    std::int64_t step = 1;
-    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_input.data_ptr<int64_t>(),
-        pending.data_ptr<int64_t>(),
-        sizeof(int64_t),
-        cudaMemcpyDeviceToDevice,
-        graph_stream));
-    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(generated.data_ptr<int64_t>(),
-        pending.data_ptr<int64_t>(),
-        sizeof(int64_t),
-        cudaMemcpyDeviceToDevice,
-        graph_stream));
-    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_pos.data_ptr<int64_t>(),
-        &position,
-        sizeof(int64_t),
-        cudaMemcpyHostToDevice,
-        graph_stream));
-    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_len.data_ptr<int64_t>(),
-        &length,
-        sizeof(int64_t),
-        cudaMemcpyHostToDevice,
-        graph_stream));
-    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_step.data_ptr<int64_t>(),
-        &step,
-        sizeof(int64_t),
-        cudaMemcpyHostToDevice,
-        graph_stream));
-    *random_host.data_ptr<float>() = 0.5f;
-    upload_random(random_host);
-    TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream));
-}
-
-void DecodeGraphCache::upload_random(const ::tyloi::DenseTensor& random_host) {
-    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(random.data_ptr<float>(),
-        random_host.data_ptr<float>(),
-        sizeof(float),
-        cudaMemcpyHostToDevice,
-        stream.stream()));
-}
-#endif
 
 void DecodeGraphCache::invalidate() {
     if (graph) graph->reset();
     graph.reset();
     storage.clear();
-#ifdef TYLOINFER_NATIVE_CUDA
     storage_layout.clear();
     static_next = {};
-#else
-    static_next = ::tyloi::DenseTensor();
-#endif
     valid = false;
 }
 
 void DecodeGraphCache::set_key(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-#ifdef TYLOINFER_NATIVE_CUDA
         const std::vector<::tyloi::Tensor>& candidate_storage) {
-#else
-        const std::vector<::tyloi::DenseTensor>& candidate_storage) {
-#endif
     planned_len = candidate_len;
     greedy = candidate_greedy;
     temperature = sampling.temperature;
@@ -451,7 +337,6 @@ void DecodeGraphCache::set_key(
     presence_penalty = sampling.presence_penalty;
     frequency_penalty = sampling.frequency_penalty;
     repetition_penalty = sampling.repetition_penalty;
-#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<std::optional<decode_graph_detail::Layout>> layouts;
     layouts.reserve(candidate_storage.size());
     for (const auto& tensor : candidate_storage) {
@@ -459,7 +344,6 @@ void DecodeGraphCache::set_key(
         else layouts.emplace_back(std::nullopt);
     }
     storage_layout = std::move(layouts);
-#endif
     storage = candidate_storage;
     valid = true;
 }

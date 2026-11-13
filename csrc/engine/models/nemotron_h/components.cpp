@@ -4,16 +4,13 @@
 #include "engine/models/nemotron_h/model.h"
 #include "engine/models/nemotron_h/mtp.h"
 #include "engine/models/nemotron_h/state.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/load.h"
-#endif
 
 #include <stdexcept>
 #include <utility>
 
 namespace tyloi::cuda::nemotron_h {
 
-#ifdef TYLOINFER_NATIVE_CUDA
 Model::Model() = default;
 Model::~Model() = default;
 Model::Model(Model&&) noexcept = default;
@@ -61,15 +58,10 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
         throw std::invalid_argument("model has no multimodal component");
     return parts->radio_vision->prepare(*this, primary, tokens, media);
 }
-#endif
 
 Components load_components(Model& model, const tyloi::weights::Loader& weights,
         bool load_optional_components
-#ifdef TYLOINFER_NATIVE_CUDA
         ) {
-#else
-        , CudaExecutionContext& execution) {
-#endif
     Components result;
     if (!load_optional_components) return result;
     if ((model.plan.vision != ::tyloi::models::Vision::none &&
@@ -90,9 +82,6 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
     if (model.plan.predictor == ::tyloi::models::Predictor::none) return result;
     TYLOINFER_RUNTIME_CHECK(supports_speculation(model), "invalid Nemotron-H predictor model");
     auto predictor = Mtp::load_if_present(
-#ifndef TYLOINFER_NATIVE_CUDA
-        execution,
-#endif
         weights, model.config, model.embed);
     TYLOINFER_RUNTIME_CHECK(predictor,
         "Nemotron-H graph declares the predictor component but the source has no MTP weights");
@@ -100,7 +89,6 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
     return result;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source,
         std::string_view definition, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         const tyloi::models::LoadOptions& options) {
@@ -111,20 +99,6 @@ void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<co
     load(*model, weights, placement, options.gpu_layers, options.expert_parallel);
     model->parts = std::make_unique<Components>(load_components(*model, weights, true));
 }
-#endif
 
-#ifndef TYLOINFER_NATIVE_CUDA
-tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(Model& language, tyloi::cache::Media&,
-        Projector projector, Collectives& collectives,
-        int primary,
-        Executor* executor,
-        const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
-    if (radio_vision)
-        return radio_vision->prepare(language,
-            projector, *executor, collectives,
-            primary, tokens, media);
-    throw std::invalid_argument("model has no multimodal component");
-}
-#endif
 
 } // namespace tyloi::cuda::nemotron_h

@@ -5,9 +5,7 @@
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/models/nemotron_h/config.h"
 #include "engine/models/metadata.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
-#endif
 #include "engine/models/metadata.h"
 #include "engine/models/source.h"
 
@@ -28,28 +26,16 @@ struct Mamba {
     int64_t mamba_heads = 0, mamba_head_dim = 0, ssm_state_size = 0;
     int64_t mamba_groups = 0, conv_kernel = 0;
     double rms_norm_eps = 1e-6, time_step_limit_lo = 0.0, time_step_limit_hi = 0.0;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor mixer_norm;
-#else
-    DenseTensor mixer_norm;
-#endif
     ::tyloi::Tensor in_proj;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
-#else
-    DenseTensor conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
-#endif
     ::tyloi::Tensor out_proj;
 };
 
 struct Moe {
     int layer = -1;
     double rms_norm_eps = 1e-6;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor ffn_norm;
-#else
-    DenseTensor ffn_norm;
-#endif
     Ffn ffn;
 };
 
@@ -59,11 +45,8 @@ struct Layer {
 };
 
 struct Model
-#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::models::CausalModel
-#endif
 {
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Create an empty model before loading weights and components. */
     Model();
     ~Model() override;
@@ -99,18 +82,13 @@ struct Model
     std::unique_ptr<Components> parts;
     /** Primary device used for media preparation. */
     int primary = 0;
-#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     ::tyloi::models::Plan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     ::tyloi::Tensor embed, lm_head;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor output_norm;
-#else
-    DenseTensor output_norm;
-#endif
     std::vector<Layer> layers;
 };
 

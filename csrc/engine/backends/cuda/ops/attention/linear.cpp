@@ -1,12 +1,8 @@
 #include "linear.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/linear.h"
 #include "engine/state/recurrent.h"
 #include "engine/backends/cuda/executor/executor.h"
 #define TYLOI_LINEAR_IMPL LinearCore
-#else
-#define TYLOI_LINEAR_IMPL LinearAttention
-#endif
 #include "engine/ops.h"
 #include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
@@ -64,17 +60,10 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::forward(
 std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
         const Projector& project, ::tyloi::DenseTensor x,
         LinearView state) const {
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto in_group = !split_in_proj ? project.group(in_proj) : QuantLinearGroup{};
     const auto qkv_group = split_in_proj ? project.group(qkv_proj) : QuantLinearGroup{};
     const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
         ? project.group(ab_nint_proj) : QuantLinearGroup{};
-#else
-    const auto in_group = !split_in_proj ? make_quant_group(in_proj, grouped_weights, true) : QuantLinearGroup{};
-    const auto qkv_group = split_in_proj ? make_quant_group(qkv_proj, grouped_weights, true) : QuantLinearGroup{};
-    const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
-        ? make_quant_group(ab_nint_proj, grouped_weights, true) : QuantLinearGroup{};
-#endif
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t nk = key_heads;
     const int64_t nv = value_heads;
@@ -84,9 +73,7 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
     const int64_t vsz = (value_heads * value_dim);
     const int64_t conv_dim = 2 * ksz + vsz;
 
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto& attn_norm = this->attn_norm.dense();
-#endif
     auto xn = qwen_rms_norm(
                   x.reshape({B * T, H}).to(::tyloi::kFloat32),
                   attn_norm, rms_norm_eps, norm_weight_offset)
@@ -146,15 +133,11 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
                         .reshape({B, T, nv}));
                 auto alpha = alpha_raw.to(::tyloi::kFloat32)
                                  .reshape({B, T, nv});
-#ifdef TYLOINFER_NATIVE_CUDA
                 const auto& dt_bias = this->dt_bias.dense();
-#endif
                 auto gate = ::tyloi::cuda::softplus(
                     alpha + dt_bias.to(::tyloi::kFloat32)
                                 .reshape({1, 1, nv}));
-#ifdef TYLOINFER_NATIVE_CUDA
                 const auto& a_log = this->a_log.dense();
-#endif
                 auto coefficient = -::tyloi::cuda::exp(
                     a_log.to(::tyloi::kFloat32));
                 gate = gate * coefficient.reshape({1, 1, nv});
@@ -174,9 +157,7 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
                     conv_input.size(1) -
                         (conv_kernel - 1),
                     conv_kernel - 1));
-#ifdef TYLOINFER_NATIVE_CUDA
                 const auto& conv_weight = this->conv_weight.dense();
-#endif
                 auto weight = conv_weight.to(::tyloi::kFloat32);
                 if (weight.dim() == 3)
                   weight = weight.squeeze(1);
@@ -199,15 +180,9 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
                          {1, 1, conv_dim, conv_kernel}))
                         .sum(-1);
                 if (
-#ifdef TYLOINFER_NATIVE_CUDA
                     conv_bias && conv_bias.defined()
-#else
-                    conv_bias.defined()
-#endif
                 ) {
-#ifdef TYLOINFER_NATIVE_CUDA
                   const auto& conv_bias = this->conv_bias.dense();
-#endif
                   conv = conv + conv_bias.to(::tyloi::kFloat32)
                                     .reshape({1, 1, conv_dim});
                 }
@@ -282,9 +257,7 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
                     y.reshape({-1, dv}).to(::tyloi::kFloat32);
                 auto inverse = ::tyloi::cuda::rsqrt(
                     y_flat.square().mean(-1, true) + rms_norm_eps);
-#ifdef TYLOINFER_NATIVE_CUDA
                 const auto& linear_norm = this->linear_norm.dense();
-#endif
                 auto y_norm = (y_flat * inverse *
                                linear_norm.to(::tyloi::kFloat32))
                                   .reshape_as(y);
@@ -298,9 +271,7 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
                 auto zf = z.transpose(1, 2).contiguous().reshape({B, T, vsz});
                 ::tyloi::DenseTensor attention_output;
                 if (dense_out_proj) {
-#ifdef TYLOINFER_NATIVE_CUDA
                   const auto& out_proj_dense = this->out_proj_dense.dense();
-#endif
                   auto dtype = out_proj_dense.scalar_type();
                   auto gated =
                       yf.to(dtype) * ::tyloi::cuda::silu(zf.to(dtype));
@@ -321,17 +292,10 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         ::tyloi::DenseTensor x,
         LinearView state, LinearInputs* captured) const {
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto in_group = !split_in_proj ? project.group(in_proj) : QuantLinearGroup{};
     const auto qkv_group = split_in_proj ? project.group(qkv_proj) : QuantLinearGroup{};
     const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
         ? project.group(ab_nint_proj) : QuantLinearGroup{};
-#else
-    const auto in_group = !split_in_proj ? make_quant_group(in_proj, grouped_weights, false) : QuantLinearGroup{};
-    const auto qkv_group = split_in_proj ? make_quant_group(qkv_proj, grouped_weights, false) : QuantLinearGroup{};
-    const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
-        ? make_quant_group(ab_nint_proj, grouped_weights, false) : QuantLinearGroup{};
-#endif
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     int64_t nk = key_heads,
             nv = value_heads;
@@ -341,9 +305,7 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
             vsz = (value_heads * value_dim);
 
     auto xn = profiler.measure("linear.attn_norm", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA
             const auto& attn_norm = this->attn_norm.dense();
-#endif
             return qwen_rms_norm(
                        x.reshape({B * T, H}).to(::tyloi::kFloat32),
                        attn_norm, rms_norm_eps,
@@ -461,10 +423,8 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
                 auto gates = profiler.measure("linear.gates_fused", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA
                   const auto& dt_bias = this->dt_bias.dense();
                   const auto& a_log = this->a_log.dense();
-#endif
                   return linear_gate_beta_cuda(alpha_raw.reshape({B, T, nv}),
                                                beta_raw.reshape({B, T, nv}),
                                                dt_bias, a_log);
@@ -488,7 +448,6 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
               [&](const LinearProjections<
                   ::tyloi::DenseTensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
-#ifdef TYLOINFER_NATIVE_CUDA
                 std::optional<::tyloi::DenseTensor> empty_bias;
                 const auto& bias = conv_bias && conv_bias.defined()
                         ? conv_bias.dense()
@@ -497,15 +456,6 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
                                        .device(::tyloi::kCUDA)
                                        .dtype(::tyloi::kFloat32)));
                 const auto& conv_weight = this->conv_weight.dense();
-#else
-                auto bias =
-                    conv_bias.defined()
-                        ? conv_bias
-                        : ::tyloi::cuda::empty(
-                              {0}, ::tyloi::TensorOptions()
-                                       .device(::tyloi::kCUDA)
-                                       .dtype(::tyloi::kFloat32));
-#endif
                 ::tyloi::DenseTensor q, k, v;
                 bool fused_prefill =
                     T >= 256 && options.fused_conv;
@@ -636,9 +586,7 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
               },
               [&](::tyloi::DenseTensor y) {
                 auto y_norm = profiler.measure("linear.out_norm", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA
                   const auto& linear_norm = this->linear_norm.dense();
-#endif
                   return rms_norm_cuda(y.reshape({-1, dv}).to(
                                            ::tyloi::kFloat32),
                                        linear_norm, rms_norm_eps)
@@ -661,9 +609,7 @@ std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
                 });
                 if (dense_out_proj) {
                   oo = profiler.measure("linear.out_proj_gate_dense", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA
                     const auto& out_proj_dense = this->out_proj_dense.dense();
-#endif
                     auto dtype = out_proj_dense.scalar_type();
                     auto gated =
                         yf.to(dtype) * ::tyloi::cuda::silu(zf.to(dtype));
@@ -694,7 +640,6 @@ void TYLOI_LINEAR_IMPL::replay(
     const int64_t dv = value_dim;
     const int64_t ksz = (key_heads * key_dim);
     const int64_t vsz = (value_heads * value_dim);
-#ifdef TYLOINFER_NATIVE_CUDA
     std::optional<::tyloi::DenseTensor> empty_bias;
     const auto& bias = conv_bias && conv_bias.defined()
                     ? conv_bias.dense()
@@ -702,14 +647,6 @@ void TYLOI_LINEAR_IMPL::replay(
                           {0}, ::tyloi::TensorOptions()
                                    .device(::tyloi::kCUDA)
                                    .dtype(::tyloi::kFloat32)));
-#else
-    auto bias = conv_bias.defined()
-                    ? conv_bias
-                    : ::tyloi::cuda::empty(
-                          {0}, ::tyloi::TensorOptions()
-                                   .device(::tyloi::kCUDA)
-                                   .dtype(::tyloi::kFloat32));
-#endif
     auto qkv =
         inputs.split
             ? ::tyloi::cuda::cat(
@@ -722,9 +659,7 @@ void TYLOI_LINEAR_IMPL::replay(
     state.convolution.copy_(conv_input.narrow(
         1, conv_input.size(1) - (conv_kernel - 1),
         conv_kernel - 1));
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto& conv_weight = this->conv_weight.dense();
-#endif
     auto conv = ssm_conv_silu_cuda(conv_input, conv_weight, bias, T);
     auto q = conv.narrow(2, 0, ksz).reshape({B, T, nk, dk}).transpose(1, 2);
     auto k = conv.narrow(2, ksz, ksz).reshape({B, T, nk, dk}).transpose(1, 2);
@@ -760,7 +695,6 @@ void TYLOI_LINEAR_IMPL::replay(
 } // namespace tyloi::cuda
 
 #undef TYLOI_LINEAR_IMPL
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::ops {
 struct Linear::State::Impl {
     cuda::Recurrent mixer;
@@ -967,4 +901,3 @@ void Linear::replay(State& state, std::int64_t retained) const {
     impl_->core.replay({v.convolution.dense(),v.recurrent.dense(),v.transposed},state.impl_->projected,retained);
 }
 }
-#endif

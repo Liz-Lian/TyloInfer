@@ -1,10 +1,8 @@
 #include "engine/models/qwen35/model.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/qwen35/state.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
-#endif
 #include "engine/ops.h"
 
 #include <algorithm>
@@ -13,7 +11,6 @@
 
 namespace tyloi::cuda::qwen35 {
 
-#ifdef TYLOINFER_NATIVE_CUDA
 Model::Model() = default;
 Model::~Model() = default;
 Model::Model(Model&&) noexcept = default;
@@ -110,6 +107,5 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
         throw std::invalid_argument("Qwen3.5 forward does not support this input mode");
     return qwen35::forward(*this, *state, std::move(input), options);
 }
-#endif
 
 } // namespace tyloi::cuda::qwen35

@@ -24,7 +24,7 @@ add_library(mfq-cuda-diagnostics STATIC
     ${PROJECT_SOURCE_DIR}/diagnostics/session_checks.cpp
 )
 mfq_configure_cuda_engine_target(mfq-cuda-diagnostics)
-target_compile_definitions(mfq-cuda-diagnostics PRIVATE TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
+target_compile_definitions(mfq-cuda-diagnostics PRIVATE NOMINMAX)
 target_link_libraries(mfq-cuda-diagnostics PUBLIC mfq-cuda-engine)
 
 if(MSVC)

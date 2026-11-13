@@ -1,4 +1,3 @@
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/working_set.h"
 
 #include "engine/backends/cuda/executor/executor.h"
@@ -116,5 +115,3 @@ void decoded_work_store(const NintTensor& weight, const DenseTensor& value) {
 }
 #endif
 }
-
-#endif // TYLOINFER_NATIVE_CUDA

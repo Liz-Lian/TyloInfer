@@ -24,13 +24,8 @@ auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, boo
     auto down = ops.routed(p + ".experts.down.weight", layer, c.experts, c.hidden, c.moe_intermediate);
     auto router = ops.weight(p + ".router.weight");
     auto shared = load_dense_ffn(ops, p + ".shared_expert", c.swiglu_limit);
-#ifdef TYLOINFER_NATIVE_CUDA
     auto bias = ::tyloi::ops::contiguous(
         ::tyloi::ops::cast(ops.dense(p + ".router.bias"), ::tyloi::kFloat32));
-#else
-    auto bias = ops.dense(p + ".router.bias").dense()
-                    .to(::tyloi::kFloat32).contiguous();
-#endif
     return ops.moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
                    std::move(bias), c);
 }
@@ -44,35 +39,20 @@ auto load_mla(Loader &ops, const Config &c, int layer, const std::string &a) {
         ops.weight(a + ".indexer.score.weight"),
         ops.routed(a + ".latent.query_embedding.weight", layer, c.heads, c.latent, c.nope),
         ops.routed(a + ".latent.output_unembedding.weight", layer, c.heads, c.value_width, c.latent),
-#ifdef TYLOINFER_NATIVE_CUDA
         ops.dense(a + ".query_a_norm.weight"),
         ops.dense(a + ".key_value_a_norm.weight"),
         ops.dense(a + ".indexer.key_norm.weight"),
         ops.dense(a + ".indexer.key_norm.bias"),
         ops.dense(a + ".indexer.pool.gate"),
         ops.dense(a + ".indexer.pool.position")};
-#else
-        ops.dense(a + ".query_a_norm.weight").dense(),
-        ops.dense(a + ".key_value_a_norm.weight").dense(),
-        ops.dense(a + ".indexer.key_norm.weight").dense(),
-        ops.dense(a + ".indexer.key_norm.bias").dense(),
-        ops.dense(a + ".indexer.pool.gate").dense(),
-        ops.dense(a + ".indexer.pool.position").dense()};
-#endif
     return ops.mla(std::move(w), c);
 }
 
 template <class Loader>
 auto load_mhc(Loader &ops, const std::string &p) {
-#ifdef TYLOINFER_NATIVE_CUDA
     auto function = ops.dense(p + ".function");
     auto base = ops.dense(p + ".base");
     auto scale = ops.dense(p + ".scale");
-#else
-    auto function = ops.dense(p + ".function").dense();
-    auto base = ops.dense(p + ".base").dense();
-    auto scale = ops.dense(p + ".scale").dense();
-#endif
     return ops.mhc(std::move(function), std::move(base), std::move(scale));
 }
 
@@ -82,13 +62,8 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
     b.config = c;
     b.attention_hc = load_mhc(ops, p + ".attention.mhc.pre");
     b.ffn_hc = load_mhc(ops, p + ".mlp.mhc.pre");
-#ifdef TYLOINFER_NATIVE_CUDA
     b.attention_norm = ops.dense(p + ".attention.norm.weight");
     b.ffn_norm = ops.dense(p + ".mlp.norm.weight");
-#else
-    b.attention_norm = ops.dense(p + ".attention.norm.weight").dense();
-    b.ffn_norm = ops.dense(p + ".mlp.norm.weight").dense();
-#endif
     b.ffn = load_ffn(ops, c, layer, p + ".mlp", false);
     if (c.linear_layer(layer)) {
         const auto a = p + ".linear_attention";
@@ -97,7 +72,6 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
             ops.weight(a + ".value.weight"), ops.weight(a + ".beta.weight"),
             ops.weight(a + ".gate_a.weight"), ops.weight(a + ".gate_b.weight"),
             ops.weight(a + ".output.weight"),
-#ifdef TYLOINFER_NATIVE_CUDA
             ops.concat({ops.dense(a + ".query_conv.weight"),
                         ops.dense(a + ".key_conv.weight"),
                         ops.dense(a + ".value_conv.weight")}),
@@ -106,16 +80,6 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
             ops.dense(a + ".dt_bias"),
             ops.dense(a + ".a"),
             ops.dense(a + ".output_norm.weight")};
-#else
-            ops.concat({ops.dense(a + ".query_conv.weight").dense(),
-                        ops.dense(a + ".key_conv.weight").dense(),
-                        ops.dense(a + ".value_conv.weight").dense()}),
-            ops.dense(a + ".forget_a.weight").dense(),
-            ops.dense(a + ".forget_b.weight").dense(),
-            ops.dense(a + ".dt_bias").dense(),
-            ops.dense(a + ".a").dense(),
-            ops.dense(a + ".output_norm.weight").dense()};
-#endif
         b.kda = ops.kda(std::move(w), c);
     } else {
         b.mla = load_mla(ops, c, layer, p + ".attention");
@@ -132,41 +96,24 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         return false;
     }
     result.config = c;
-#ifdef TYLOINFER_NATIVE_CUDA
     result.embedding_norm = ::tyloi::ops::contiguous(
         ::tyloi::ops::cast(ops.dense("predictor.embedding_norm.weight"), ::tyloi::kFloat32));
     result.hidden_norm = ::tyloi::ops::contiguous(
         ::tyloi::ops::cast(ops.dense("predictor.hidden_norm.weight"), ::tyloi::kFloat32));
     result.output_norm = ops.dense("predictor.output_norm.weight");
-#else
-    result.embedding_norm = ops.dense("predictor.embedding_norm.weight").dense().to(::tyloi::kFloat32).contiguous();
-    result.hidden_norm = ops.dense("predictor.hidden_norm.weight").dense().to(::tyloi::kFloat32).contiguous();
-    result.output_norm = ops.dense("predictor.output_norm.weight").dense();
-#endif
     result.fusion = ops.weight("predictor.fusion.weight");
     for (int64_t i = 0; i < count; ++i) {
         const auto p = "predictor.block." + std::to_string(i);
         typename Predictor::Layer layer;
-#ifdef TYLOINFER_NATIVE_CUDA
         layer.attention_norm = ops.dense(p + ".attention.norm.weight");
         layer.ffn_norm = ops.dense(p + ".mlp.norm.weight");
-#else
-        layer.attention_norm = ops.dense(p + ".attention.norm.weight").dense();
-        layer.ffn_norm = ops.dense(p + ".mlp.norm.weight").dense();
-#endif
         layer.ffn = load_ffn(ops, c, int(i), p + ".mlp", true);
         layer.attention = load_mla(ops, c, int(i), p + ".attention");
         result.layers.push_back(std::move(layer));
     }
-#ifdef TYLOINFER_NATIVE_CUDA
     require_model(result.embedding_norm.dim() == 1 && result.embedding_norm.size(0) == c.hidden &&
                       result.hidden_norm.dim() == 1 && result.hidden_norm.size(0) == c.hidden &&
                       result.output_norm.numel() == c.hidden,
-#else
-    require_model(result.embedding_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
-                      result.hidden_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
-                      result.output_norm.numel() == c.hidden,
-#endif
                   "GLM5-Next MTP normalization width disagrees with backbone");
     return true;
 }

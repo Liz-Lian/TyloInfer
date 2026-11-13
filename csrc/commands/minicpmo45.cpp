@@ -1,7 +1,5 @@
 #include "minicpmo45.h"
 #include "cli.h"
-#include "engine/load.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "engine/backends/cuda/executor/executor.h"
@@ -12,100 +10,15 @@
 #include "engine/ops.h"
 #include "eval/tensors.h"
 #include "eval/minicpmo45.h"
-#else
-#include "engine/backends/cuda/executor/execution.h"
-#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#include "engine/models/minicpmo45/runtime.h"
-#endif
 
-#include <nlohmann/json.hpp>
 #include <algorithm>
-#include <chrono>
-#include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <limits>
-#include <random>
 #include <sstream>
 
 namespace {
 
 using tyloi::indexing::Slice;
-
-#ifndef TYLOINFER_NATIVE_CUDA
-void minicpmo45_write_pickle_tensor(const tyloi::DenseTensor &value,
-                                           const std::string &path) {
-    auto bytes =
-        tyloi::cuda::pickle_save(value.detach().to(tyloi::kCPU).contiguous());
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        throw std::runtime_error("failed to create MiniCPM-o tensor file: " + path);
-    }
-    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    if (!output) {
-        throw std::runtime_error("failed to write MiniCPM-o tensor file: " + path);
-    }
-}
-
-tyloi::DenseTensor read_tensor(
-        const std::string & path,
-        bool required) {
-    if (!std::filesystem::is_regular_file(path)) {
-        if (required) {
-            throw std::runtime_error(
-                "MiniCPM-o tensor file is missing: " + path);
-        }
-        return tyloi::DenseTensor();
-    }
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) {
-        throw std::runtime_error(
-            "failed to open MiniCPM-o tensor file: " + path);
-    }
-    const auto end = input.tellg();
-    if (end <= 0) {
-        throw std::runtime_error(
-            "MiniCPM-o tensor file is empty: " + path);
-    }
-    std::vector<char> bytes(static_cast<size_t>(end));
-    input.seekg(0, std::ios::beg);
-    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    if (!input) {
-        throw std::runtime_error(
-            "failed to read MiniCPM-o tensor file: " + path);
-    }
-    auto value = tyloi::cuda::pickle_load(bytes);
-    if (!value.isTensor()) {
-        throw std::runtime_error(
-            "MiniCPM-o input is not a tensor: " + path);
-    }
-    return value.toTensor();
-}
-
-void write_tensor(
-        const tyloi::DenseTensor & value,
-        const std::string & path) {
-    if (!value.defined()) return;
-    const std::filesystem::path output(path);
-    if (output.has_parent_path()) {
-        std::filesystem::create_directories(output.parent_path());
-    }
-    minicpmo45_write_pickle_tensor(value, path);
-}
-
-int64_t read_scalar(
-        const std::string & path,
-        int64_t fallback) {
-    auto value = read_tensor(path, false);
-    if (!value.defined()) return fallback;
-    if (value.numel() != 1) {
-        throw std::runtime_error(
-            "MiniCPM-o scalar tensor must contain one value: " + path);
-    }
-    return value.to(tyloi::kCPU, tyloi::kInt64).item<int64_t>();
-}
-#endif
 
 std::string minicpmo45_duplex_step_prefix(
         const std::string & prefix,
@@ -115,158 +28,6 @@ std::string minicpmo45_duplex_step_prefix(
            << std::setw(4) << step;
     return stream.str();
 }
-
-#ifndef TYLOINFER_NATIVE_CUDA
-int run_minicpmo45_duplex(CudaExecutionContext &execution, const std::string &model_path,
-                          const std::string &config_path, const std::string &input_prefix,
-                          const std::string &output_prefix, int64_t context_size, int64_t steps,
-                          int64_t max_speak_tokens, bool greedy, int64_t seed) {
-    tyloi::cuda::NoGradGuard no_grad;
-    execution.profiler.enabled = false;
-    if (input_prefix.empty() || output_prefix.empty() || steps <= 0 || max_speak_tokens < 2 ||
-        seed < 0) {
-        throw std::runtime_error("MiniCPM-o duplex mode requires prefixes, positive steps, "
-                                 "at least two generation slots, and a non-negative seed");
-    }
-    tyloi::cuda::manual_seed(seed);
-    mfq_cuda_manual_seed_all(seed);
-    auto runtime = MiniCPMO45Runtime::load(execution, model_path, config_path, context_size);
-    auto special_ids = MiniCPMO45DuplexSpecialIds::from_tensor(
-        read_tensor(input_prefix + ".special_ids.pt", true));
-    std::vector<int64_t> forbidden_ids;
-    auto forbidden = read_tensor(input_prefix + ".forbidden_ids.pt", false);
-    if (forbidden.defined()) {
-        forbidden = forbidden.to(tyloi::kCPU, tyloi::kInt64)
-                        .contiguous()
-                        .reshape({-1});
-        const auto *values = forbidden.data_ptr<int64_t>();
-        forbidden_ids.assign(values, values + forbidden.numel());
-    }
-    MiniCPMO45DuplexSession session(runtime, special_ids, std::move(forbidden_ids), greedy);
-    const auto system_ids = read_tensor(input_prefix + ".system_ids.pt", false);
-    session.prepare(system_ids);
-
-    int64_t listen_steps = 0;
-    int64_t speak_steps = 0;
-    for (int64_t step = 0; step < steps; ++step) {
-        const std::string input = minicpmo45_duplex_step_prefix(input_prefix, step);
-        const std::string output = minicpmo45_duplex_step_prefix(output_prefix, step);
-        const bool reset_session =
-            read_scalar(input + ".reset_session.pt", 0) != 0;
-        if (reset_session)
-            session.prepare(system_ids);
-        const auto pixels = read_tensor(input + ".pixel_values.pt", false);
-        const auto patch_mask = read_tensor(input + ".patch_mask.pt", false);
-        const auto target_sizes = read_tensor(input + ".target_sizes.pt", false);
-        const auto image_slice_counts =
-            read_tensor(input + ".image_slice_counts.pt", false);
-        const auto audio_features = read_tensor(input + ".audio_features.pt", false);
-        const auto text_ids = read_tensor(input + ".text_ids.pt", false);
-        const int64_t prefix_extra = read_scalar(
-            input + ".audio_prefix_extra_frames.pt", session.audio_chunk_index == 0 ? 0 : 2);
-        const int64_t suffix_extra =
-            read_scalar(input + ".audio_suffix_extra_frames.pt", 2);
-        const bool force_listen =
-            read_scalar(input + ".force_listen.pt", 0) != 0;
-
-        auto result =
-            session.run_step(pixels, patch_mask, target_sizes, image_slice_counts, audio_features,
-                             prefix_extra, suffix_extra, text_ids, max_speak_tokens, force_listen);
-        write_tensor(result.decision_logits, output + ".decision_logits.pt");
-        write_tensor(result.audio_embeddings, output + ".audio_embeddings.pt");
-        write_tensor(result.generated_ids, output + ".generated_ids.pt");
-        write_tensor(result.tts_codes, output + ".tts_codes.pt");
-        write_tensor(
-            tyloi::cuda::tensor(
-                std::vector<int64_t>{result.is_listen ? 1 : 0, result.end_of_turn ? 1 : 0,
-                                     runtime.language.cache_pos, runtime.audio.cache_length(),
-                                     session.tts_state.position, session.audio_chunk_index},
-                tyloi::TensorOptions().dtype(tyloi::kInt64)),
-            output + ".state.pt");
-        if (result.is_listen) {
-            ++listen_steps;
-        } else {
-            ++speak_steps;
-        }
-    }
-    std::cout << "minicpmo45_duplex=ok"
-              << " steps=" << steps << " listens=" << listen_steps << " speaks=" << speak_steps
-              << " language_cache=" << runtime.language.cache_pos
-              << " audio_cache=" << runtime.audio.cache_length()
-              << " tts_cache=" << session.tts_state.position << " seed=" << seed << "\n";
-    return 0;
-}
-
-int run_minicpmo45_composite(CudaExecutionContext &execution, const std::string &model_path,
-                             const std::string &config_path, const std::string &input_prefix,
-                             const std::string &output_prefix, int64_t context_size,
-                             int64_t tts_steps) {
-    tyloi::cuda::NoGradGuard no_grad;
-    execution.profiler.enabled = false;
-    if (input_prefix.empty() || output_prefix.empty()) {
-        throw std::runtime_error("MiniCPM-o composite graph requires input and output prefixes");
-    }
-    auto runtime = MiniCPMO45Runtime::load(execution, model_path, config_path, context_size);
-    const auto input_ids = read_tensor(input_prefix + ".input_ids.pt", true);
-    const auto position_ids = read_tensor(input_prefix + ".position_ids.pt", false);
-    const auto attention_mask = read_tensor(input_prefix + ".attention_mask.pt", false);
-    const auto pixels = read_tensor(input_prefix + ".pixel_values.pt", false);
-    const auto patch_mask = read_tensor(input_prefix + ".patch_mask.pt", false);
-    const auto target_sizes = read_tensor(input_prefix + ".target_sizes.pt", false);
-    const auto image_bounds = read_tensor(input_prefix + ".image_bounds.pt", false);
-    const auto audio_features = read_tensor(input_prefix + ".audio_features.pt", false);
-    const auto audio_lengths = read_tensor(input_prefix + ".audio_lengths.pt", false);
-    const auto audio_bounds = read_tensor(input_prefix + ".audio_bounds.pt", false);
-    auto result =
-        runtime.forward(input_ids, position_ids, attention_mask, pixels, patch_mask, target_sizes,
-                        image_bounds, audio_features, audio_lengths, audio_bounds);
-    write_tensor(result.vision_states, output_prefix + ".vision_states.pt");
-    write_tensor(result.image_embeddings, output_prefix + ".image_embeddings.pt");
-    write_tensor(result.audio_embeddings, output_prefix + ".audio_embeddings.pt");
-    write_tensor(result.input_embeddings, output_prefix + ".input_embeddings.pt");
-    write_tensor(result.hidden_states, output_prefix + ".hidden_states.pt");
-    write_tensor(result.logits, output_prefix + ".logits.pt");
-    if (tts_steps > 0) {
-        tyloi::DenseTensor condition =
-            read_tensor(input_prefix + ".tts_inputs_embeds.pt", false);
-        if (!condition.defined()) {
-            auto bound = read_tensor(input_prefix + ".tts_bound.pt", true)
-                             .to(tyloi::kCPU, tyloi::kInt64)
-                             .contiguous();
-            if (bound.dim() != 1 || bound.numel() != 2) {
-                throw std::runtime_error("MiniCPM-o tts_bound must contain [begin,end]");
-            }
-            const int64_t begin = bound[0].item<int64_t>();
-            const int64_t end = bound[1].item<int64_t>();
-            if (begin < 0 || end <= begin || end > input_ids.size(-1) || input_ids.size(0) != 1) {
-                throw std::runtime_error("MiniCPM-o TTS text span is invalid");
-            }
-            condition =
-                runtime.tts.condition(runtime.projector, input_ids.index({0, Slice(begin, end)}),
-                                      result.hidden_states.index({0, Slice(begin, end), Slice()}));
-        } else {
-            condition = condition.to(tyloi::kCUDA).contiguous();
-        }
-        std::vector<tyloi::DenseTensor> tts_logits;
-        tyloi::cuda::minicpmo45::Tts::State tts_state(runtime.tts);
-        const auto codes = runtime.tts.generate_official(
-            tts_state, *runtime.tts_executor, runtime.tts_mode,
-            condition, tts_steps, 6561, 50, 0.8, 0.85, 25, 1.05, &tts_logits);
-        write_tensor(condition, output_prefix + ".tts_inputs_embeds.pt");
-        write_tensor(codes, output_prefix + ".tts_codes.pt");
-        if (!tts_logits.empty()) {
-            write_tensor(tyloi::cuda::stack(tts_logits, 1),
-                                   output_prefix + ".tts_logits.pt");
-        }
-    }
-    std::cout << "minicpmo45_composite=ok"
-              << " batch=" << input_ids.size(0) << " tokens=" << input_ids.size(1)
-              << " images=" << (image_bounds.defined() ? image_bounds.size(0) : 0)
-              << " audios=" << (audio_bounds.defined() ? audio_bounds.size(0) : 0)
-              << " tts_steps=" << tts_steps << "\n";
-    return 0;
-}
-#endif
 
 } // namespace
 
@@ -326,7 +87,6 @@ void validate_command_options(const CommandOptions& options) {
     }
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 using tyloi::eval::read_tensor;
 using tyloi::eval::write_tensor;
 using tyloi::eval::read_scalar;
@@ -557,31 +317,5 @@ int run_duplex(Program& program, const CommandOptions& options) {
               << " tts_cache=" << last.tts_cache_position << " seed=" << options.duplex_seed << "\n";
     return 0;
 }
-#else
-int run_composite(
-        CudaExecutionContext& execution,
-        const CudaLoadOptions& load,
-        const CommandOptions& options) {
-    return run_minicpmo45_composite(
-        execution, load.model_path, load.config_path,
-        options.input_prefix, options.output_prefix,
-        load.context_size, options.tts_steps);
-}
-
-int run_duplex(
-        CudaExecutionContext& execution,
-        const CudaLoadOptions& load,
-        const CommandOptions& options) {
-    return run_minicpmo45_duplex(
-        execution, load.model_path, load.config_path,
-        options.duplex_input_prefix,
-        options.duplex_output_prefix,
-        load.context_size, options.duplex_steps,
-        options.duplex_max_speak_tokens,
-        options.duplex_greedy,
-        options.duplex_seed);
-}
-
-#endif
 
 } // namespace tyloi::cuda::minicpmo45

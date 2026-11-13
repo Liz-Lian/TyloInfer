@@ -1,5 +1,4 @@
 #include "engine/ops/csa.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/attention/csa_core.h"
 #include <limits>
 #include <stdexcept>
@@ -183,4 +182,3 @@ Tensor Csa::forward(State& state, Shared& shared, const Tensor& input, const Ten
     return result;
 }
 } // namespace tyloi::ops
-#endif

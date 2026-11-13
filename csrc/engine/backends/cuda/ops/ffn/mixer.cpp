@@ -1,5 +1,4 @@
 #include "engine/ops/residual.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/ffn/mixer_core.h"
 #include <optional>
 #include <stdexcept>
@@ -55,4 +54,3 @@ bool Residual::can_chain(const Tensor& input) const {
     return impl_->core.can_fuse(input.dense());
 }
 } // namespace tyloi::ops
-#endif

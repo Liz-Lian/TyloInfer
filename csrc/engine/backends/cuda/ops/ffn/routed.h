@@ -2,7 +2,6 @@
 
 #include "engine/ops.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 
 tyloi::ops::SelectedExperts topk(
@@ -20,4 +19,3 @@ tyloi::ops::RoutedGeglu routed_geglu(
     bool trace);
 
 } // namespace tyloi::cuda::ops
-#endif

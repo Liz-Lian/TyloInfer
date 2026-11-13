@@ -303,11 +303,7 @@ bool QuantLinearGroup::tensor_parallel_output_compatible() const {
 std::vector<::tyloi::DenseTensor> DenseLinearGroup::forward(::tyloi::DenseTensor x) const {
     auto shape = x.sizes().vec();
     auto y = dense_projection(x.reshape({-1, x.size(-1)}),
-#ifdef TYLOINFER_NATIVE_CUDA
         w.dense());
-#else
-        w);
-#endif
     auto parts = y.split_with_sizes(outs, -1);
     for (auto & p : parts) {
         auto s = shape;

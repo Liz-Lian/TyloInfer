@@ -122,11 +122,7 @@ struct QuantLinearGroup {
 void check_projection(const QuantLinearGroup& group, const ::tyloi::DenseTensor& input);
 
 struct DenseLinearGroup {
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor w;
-#else
-    ::tyloi::DenseTensor w;
-#endif
     std::vector<int64_t> outs;
 
     std::vector<::tyloi::DenseTensor> forward(::tyloi::DenseTensor x) const;

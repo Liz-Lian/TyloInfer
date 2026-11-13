@@ -18,42 +18,16 @@ PagedKv::PagedKv(const std::vector<Layout>& layouts, int64_t context,
       maximum_physical_pages_(checked_maximum_pages(sequences, logical_pages_per_sequence_)),
       allocator_(maximum_physical_pages_),
       host_page_table_(size_t(sequences) * size_t(logical_pages_per_sequence_), -1)
-#ifdef TYLOINFER_NATIVE_CUDA
       , preallocate_(preallocate)
-#endif
       {
     TYLOINFER_RUNTIME_CHECK(maximum_sequences_ > 0 &&
         logical_pages_per_sequence_ > 0,
         "Paged KV requires positive sequence and context limits");
-#ifndef TYLOINFER_NATIVE_CUDA
-    const int64_t maximum_chunks =
-        (maximum_physical_pages_ + kPagesPerChunk - 1) /
-        kPagesPerChunk;
-#endif
     for (const auto& layout : layouts) {
         const auto heads = layout.heads;
         const auto head_dim = layout.head_dim;
         TYLOINFER_RUNTIME_CHECK(heads > 0 && head_dim > 0,
             "Paged KV encountered invalid full-attention geometry");
-#ifndef TYLOINFER_NATIVE_CUDA
-        const int device = layout.device;
-        MfqCudaGuard guard(device);
-        auto table = device_page_tables_.find(device);
-        if (table == device_page_tables_.end()) {
-            auto page_table = ::tyloi::cuda::empty(
-                {maximum_sequences_, logical_pages_per_sequence_},
-                ::tyloi::TensorOptions()
-                    .device(::tyloi::Device(
-                        ::tyloi::kCUDA, device))
-                    .dtype(::tyloi::kInt32));
-            page_table.fill_(-1);
-            device_page_tables_.emplace(device, std::move(page_table));
-        }
-        auto pointer_options = ::tyloi::TensorOptions()
-            .device(::tyloi::Device(
-                ::tyloi::kCUDA, device))
-            .dtype(::tyloi::kInt64);
-#endif
         Pool pool;
         pool.layout = layout;
         pool.key_width = layout.quantization.enabled()
@@ -62,23 +36,12 @@ PagedKv::PagedKv(const std::vector<Layout>& layouts, int64_t context,
             ? cuda_kv_packed_width(int(head_dim), layout.quantization.value_bits()) : head_dim;
         pool.dtype = layout.quantization.enabled()
             ? ::tyloi::kInt32 : ::tyloi::kFloat16;
-#ifndef TYLOINFER_NATIVE_CUDA
-        pool.k_chunk_ptrs = ::tyloi::cuda::zeros(
-            {maximum_chunks}, pointer_options);
-        pool.v_chunk_ptrs = ::tyloi::cuda::zeros(
-            {maximum_chunks}, pointer_options);
-#endif
         layers_.push_back(std::move(pool));
     }
     TYLOINFER_RUNTIME_CHECK(!layers_.empty(),
         "Paged KV requires at least one full-attention layer");
-#ifndef TYLOINFER_NATIVE_CUDA
-    if (preallocate)
-        ensure_storage(static_cast<size_t>(logical_pages_per_sequence_));
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 void PagedKv::initialize() {
     if (initialized_) throw std::logic_error("Paged KV is already initialized");
     const int64_t maximum_chunks=(maximum_physical_pages_+kPagesPerChunk-1)/kPagesPerChunk;
@@ -100,7 +63,6 @@ void PagedKv::initialize() {
     if (preallocate_) ensure_storage(static_cast<size_t>(logical_pages_per_sequence_));
     initialized_=true;
 }
-#endif
 
 namespace {
 using Growth = std::vector<std::pair<tyloi::Device, std::size_t>>;

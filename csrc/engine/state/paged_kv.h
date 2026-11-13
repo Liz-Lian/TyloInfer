@@ -44,10 +44,8 @@ public:
 
     PagedKv(const std::vector<Layout>& layers, int64_t context, int32_t sequences,
             bool preallocate);
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Allocate prepared tables and optional pages after the owner admits their backing. */
     void initialize();
-#endif
     PagedKv(const PagedKv&) = delete;
     PagedKv& operator=(const PagedKv&) = delete;
 
@@ -96,10 +94,8 @@ private:
     std::vector<Pool> layers_;
     std::vector<Chunk> pending_chunks_;
     std::vector<int64_t> pending_pointers_;
-#ifdef TYLOINFER_NATIVE_CUDA
     bool preallocate_ = false;
     bool initialized_ = false;
-#endif
     size_t storage_pages_ = 0;
     size_t reserved_bytes_ = 0;
     std::atomic<size_t> live_pages_metric_{0}, peak_live_pages_metric_{0};

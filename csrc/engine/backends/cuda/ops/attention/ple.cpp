@@ -1,6 +1,5 @@
 #include "engine/ops/ple.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
@@ -221,4 +220,3 @@ Tensor Ple::forward_graph(State& state, const Tensor& input, const Tensor& embed
     return result;
 }
 } // namespace tyloi::ops
-#endif

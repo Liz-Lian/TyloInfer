@@ -11,7 +11,6 @@
 
 namespace tyloi::cuda::qwen4_exp {
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 using Growth = std::vector<std::pair<tyloi::Device, std::size_t>>;
 std::size_t multiply(std::size_t a, std::size_t b) {
@@ -103,15 +102,10 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
     }
     return result;
 }
-#endif
 
 LayerState::LayerState(const Layer& layer) {
     if (layer.qsa)
-#ifdef TYLOINFER_NATIVE_CUDA
         qsa = std::make_unique<tyloi::ops::Qsa::State>(*layer.qsa);
-#else
-        qsa = std::make_unique<Qsa::State>(*layer.qsa);
-#endif
 }
 
 void LayerState::reset(const Layer& layer) {
@@ -160,15 +154,11 @@ tyloi::models::qwen4_exp::LayerSnapshot capture_layer_session(
         return saved;
     };
     if (layer.qsa)
-#ifdef TYLOINFER_NATIVE_CUDA
     {
         tyloi::ops::Qsa::Snapshot saved;
         layer.qsa->capture_session(*state.qsa,saved,position,bytes);
         snapshot.keys=std::move(saved.keys);snapshot.values=std::move(saved.values);snapshot.index=std::move(saved.index);
     }
-#else
-        layer.qsa->capture_session(*state.qsa, snapshot, position, bytes);
-#endif
     if (layer.gdn) {
         snapshot.convolution = save(state.gdn.conv.dense());
         snapshot.recurrent = save(state.gdn.recurrent.dense());
@@ -183,28 +173,6 @@ tyloi::models::qwen4_exp::LayerSnapshot capture_layer_session(
     return snapshot;
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA
-void restore_layer_session(
-        const Layer& layer, LayerState& state,
-        const tyloi::models::qwen4_exp::LayerSnapshot& snapshot, std::int64_t position) {
-    state.reset(layer);
-    if (layer.qsa)
-        layer.qsa->restore_session(*state.qsa, snapshot, position);
-    if (layer.gdn) {
-        const auto* convolution = snapshot.convolution.representation<DenseTensor>();
-        const auto* recurrent = snapshot.recurrent.representation<DenseTensor>();
-        TYLOINFER_RUNTIME_CHECK(convolution && recurrent, "missing Qwen4 GDN session state");
-        layer.gdn->restore_session(state.gdn, *convolution, *recurrent, state.retain_graph_storage);
-    }
-    if (layer.ple) {
-        const auto* convolution = snapshot.ple_convolution.representation<DenseTensor>();
-        TYLOINFER_RUNTIME_CHECK(convolution, "missing Qwen4 PLE session state");
-        layer.ple->restore_session(state.ple, *convolution,
-                                   {snapshot.ple_batch, snapshot.ple_tokens}, state.retain_graph_storage);
-    }
-}
-
-#else
 void validate_layer_session(const Layer& layer, const LayerState& current,
         const tyloi::models::qwen4_exp::LayerSnapshot& saved, std::int64_t position) {
     const auto device=tyloi::Device(tyloi::DeviceType::cuda,layer.cuda_device);
@@ -261,7 +229,6 @@ void stage_layer_session(const Layer& layer, LayerState& candidate,
         layer.ple->restore_graph_context(candidate.ple,{saved.ple_batch,saved.ple_tokens});
     }
 }
-#endif
 
 tyloi::models::SnapshotSize snapshot_size(const State& state,const tyloi::models::Mtp* mtp) {
     const auto& model = state.model_;
@@ -297,42 +264,13 @@ std::vector<::tyloi::Tensor> State::storage() const {
         const auto& block=*model_.layers[i];
         const auto& layer=*layers[i];
         if(block.gdn) {
-#ifdef TYLOINFER_NATIVE_CUDA
             for(const auto& value:block.gdn->storage(layer.gdn)) add(value);
-#else
-            const auto& gdn=layer.gdn;
-            // GDN reassigns the Dense representation in place. Capture an
-            // independent view so a later reset cannot replace this backing.
-            add(gdn.conv.dense());add(gdn.recurrent.dense());add(gdn.core_workspace.dense());
-            add(gdn.saved_conv);add(gdn.saved_state);
-            for(const auto& value:gdn.saved_prefix_conv)add(value);
-            for(const auto& value:gdn.saved_prefix_state)add(value);
-#endif
         }
         if(block.ple) {
-#ifdef TYLOINFER_NATIVE_CUDA
             for(const auto& value:block.ple->storage(layer.ple)) add(value);
-#else
-            const auto& ple=layer.ple;
-            add(ple.conv);add(ple.saved_conv);
-            for(const auto& value:ple.saved_prefix_conv)add(value);
-#endif
         }
         if(block.qsa) {
-#ifdef TYLOINFER_NATIVE_CUDA
             for(const auto& value:block.qsa->storage(*layer.qsa)) add(value);
-#else
-            const auto& qsa=*layer.qsa;
-            add(qsa.keys.storage());add(qsa.values.storage());add(qsa.index.storage());
-            add(qsa.graph_keys);add(qsa.graph_values);add(qsa.graph_pooled);add(qsa.graph_index);
-            if(qsa.memory) {
-                add(qsa.memory->keys);add(qsa.memory->values);add(qsa.memory->index);add(qsa.memory->pooled);
-                const auto& hot=qsa.memory->hot;
-                add(hot.keys);add(hot.values);add(hot.mapping);add(hot.slot_ids);add(hot.requested);
-                add(hot.epochs);add(hot.queue);add(hot.control);add(hot.cold_keys);add(hot.cold_values);
-                add(hot.cold_mapping);add(hot.free_cold);add(hot.free_gpu);add(hot.cold_control);
-            }
-#endif
         }
     }
     return result;
@@ -350,7 +288,6 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
     tyloi::models::require_model(model_.supports_suffix_speculation() && draft_tokens > 0 &&
                                      cache_pos + draft_tokens <= model_.max_position_embeddings(),
                                  "invalid speculative suffix");
-#ifdef TYLOINFER_NATIVE_CUDA
     (void)suffix_growth(draft_tokens);
     for (std::size_t i=0; i<model_.layers.size(); ++i) {
         const auto& weights=*model_.layers[i];
@@ -364,7 +301,6 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
         }
     }
     speculative_prefix_retention=false;
-#endif
     speculative_start = cache_pos;
     speculative_confirmed = 0;
 }
@@ -379,7 +315,6 @@ void State::commit_speculative() {
 }
 
 TextSessionStateKind State::text_session_state_kind() const {
-#ifdef TYLOINFER_NATIVE_CUDA
     if (model_.layers.empty() || layers.size()!=model_.layers.size()) return TextSessionStateKind::Unsupported;
     for (std::size_t i=0; i<layers.size(); ++i) {
         if (!model_.layers[i] || !layers[i]) return TextSessionStateKind::Unsupported;
@@ -387,11 +322,6 @@ TextSessionStateKind State::text_session_state_kind() const {
             !model_.layers[i]->qsa->supports_session(*layers[i]->qsa))) return TextSessionStateKind::Unsupported;
     }
     return TextSessionStateKind::Qwen4;
-#else
-    return model_.execution && !model_.execution->offload && !model_.layers.empty()
-        ? TextSessionStateKind::Qwen4
-        : TextSessionStateKind::Unsupported;
-#endif
 }
 
 bool State::supports_text_session_state() const {
@@ -413,17 +343,12 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     tyloi::models::qwen4_exp::Snapshot snapshot;
     for (std::size_t i=0; i<model_.layers.size(); ++i)
         snapshot.layers.push_back(capture_layer_session(*model_.layers[i], *layers[i], cache_pos, state.bytes));
-#ifdef TYLOINFER_NATIVE_CUDA
     snapshot.positions = tyloi::ops::clone(positions);
-#else
-    snapshot.positions = std::make_shared<DenseTensor>(positions.clone());
-#endif
     state.bytes += session_tensor_bytes(snapshot.positions);
     state.payload = std::move(snapshot);
     return state;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 class Candidate final : public tyloi::models::Restore {
 public:
     Candidate(State& owner, const TextSessionState& saved) : owner_(owner), saved_(saved) {
@@ -482,22 +407,5 @@ std::unique_ptr<tyloi::models::Restore> State::prepare_restore(const TextSession
     return std::make_unique<Candidate>(*this,saved);
 }
 
-#else
-void State::restore_text_session_state(const TextSessionState& state) {
-    const auto* snapshot = std::get_if<tyloi::models::qwen4_exp::Snapshot>(&state.payload);
-    const auto* positions = snapshot ? snapshot->positions.representation<DenseTensor>() : nullptr;
-    TYLOINFER_RUNTIME_CHECK(text_session_state_kind() == TextSessionStateKind::Qwen4 && snapshot &&
-                                snapshot->layers.size() == model_.layers.size() && state.cache_pos > 0 &&
-                                std::size_t(state.cache_pos) == state.tokens.size() &&
-                                positions && positions->defined() &&
-                                positions->size(-1) == state.cache_pos,
-                            "incompatible Qwen4 text session state");
-    reset(1);
-    for (std::size_t i = 0; i < snapshot->layers.size(); ++i)
-        restore_layer_session(*model_.layers[i], *layers[i], snapshot->layers[i], state.cache_pos);
-    this->positions = positions->clone();
-    cache_pos = state.cache_pos;
-}
-#endif
 
 } // namespace tyloi::cuda::qwen4_exp

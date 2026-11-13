@@ -3,7 +3,6 @@
 #include "quant_linear.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight);
 tyloi::DenseTensor project(tyloi::DenseTensor input, const ::tyloi::Tensor& weight);
@@ -19,7 +18,6 @@ std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input,
     std::span<const ::tyloi::Tensor> weights, std::size_t prefix);
 tyloi::DenseTensor sigmoid_project(tyloi::DenseTensor input, tyloi::DenseTensor gate, const ::tyloi::Tensor& weight);
 }
-#endif
 
 struct TqMoeBanks;
 

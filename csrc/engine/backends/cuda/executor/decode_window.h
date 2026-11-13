@@ -1,9 +1,7 @@
 #pragma once
 #include "engine/backends/cuda/executor/graph_registry.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/kernels/residual_trace.h"
 #include "engine/ops/residual.h"
-#endif
 #include <cuda_runtime_api.h>
 #include <exception>
 #include <functional>
@@ -44,7 +42,6 @@ public:
     ~DecodeWindow();
     DecodeWindow(const DecodeWindow&)=delete;
     DecodeWindow& operator=(const DecodeWindow&)=delete;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Bind a single-request window to the active execution stream. */
     DecodeWindow();
     /** Retain the caller's stream and a ready event for independent requests. */
@@ -62,8 +59,6 @@ public:
     void clear() noexcept;
     /** Prepare graph weights or own a fallback pool before snapshot allocation. */
     void prepare();
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Drive preparation, two warmups and recording on the entering thread. */
     class Capture {
     public:
@@ -88,11 +83,6 @@ public:
     };
     /** Create an owner for the explicit capture phases. */
     std::unique_ptr<Capture> capture();
-#else
-    void capture(const std::function<void()>& body,
-                 const std::function<void()>& restore,
-                 const std::function<void()>& release_output = {});
-#endif
     void enroll(Task task);
     // Finish the current GPU segment before running host I/O. During graph
     // preparation only the supplied placeholder buffers are consumed.
@@ -106,14 +96,12 @@ public:
     void run();
     void mark(int layer,const char* phase);
     void mark_current(const char* phase) {mark(profile_layer_,phase);}
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Prepare fused residual profiling points without recording them. */
     ResidualTraceData prepare_residual_trace(tyloi::ops::ResidualRole role);
     /** Publish the points actually recorded by the fused launch. */
     void commit_residual_trace(const ResidualTraceData& trace) noexcept;
     /** Reject a fused launch that published more profiling points than the clock supports. */
     void validate_residual_trace() const;
-#endif
     int set_profile_tile(int tile) noexcept {const int previous=profile_tile_;profile_tile_=tile;return previous;}
     void set_profile_geometry(const char* role,int rows) {profile_role_=role;profile_rows_=rows;}
     void set_profile_layer_kind(int layer,const char* kind) {if(layer_profile_)profile_kinds_[layer]=kind;}
@@ -123,30 +111,24 @@ public:
     bool valid() const { const auto* graph=graphs_.find(0,1);return graph && graph->valid() && !recording_segments_; }
     static DecodeWindow* recording() noexcept;
 private:
-#ifdef TYLOINFER_NATIVE_CUDA
     struct Context;
     explicit DecodeWindow(std::unique_ptr<Context> context);
     std::unique_ptr<Context> context_;
-#endif
     void initialize_profile();
     cudaStream_t stream_;
     GraphRegistry graphs_;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::weights::Cache* weights_ = nullptr;
     std::unique_ptr<Graph> memory_pool_;
     bool prepared_ = false;
-#endif
     struct LayerPoint;
     struct ProfileClock;
     std::unique_ptr<ProfileClock> profile_clock_;
     std::vector<std::unique_ptr<LayerPoint>> layer_points_;
-#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<std::unique_ptr<LayerPoint>> pending_points_;
     std::vector<std::size_t> free_profile_slots_;
     std::size_t next_profile_slot_ = 0;
     LayerPoint* declare_point(int layer, const char* phase);
     void publish_point(LayerPoint* point) noexcept;
-#endif
     std::map<std::tuple<int,int,std::string>,LayerPoint*> layer_point_index_;
     int profile_tile_=-1;
     int profile_layer_=-1;

@@ -5,11 +5,9 @@
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #include "engine/models/source/model_graph.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/minicpmo45/state.h"
 #include "engine/models/minicpmo45/forward.h"
 #include <algorithm>
-#endif
 
 #include <iostream>
 #include <stdexcept>
@@ -62,11 +60,7 @@ void load(Model& model, const tyloi::weights::Loader& weights, const LayerPlacem
         RopeCache rope(config.max_position_embeddings, config.rotary_dim, config.rope_base,
             0, -1, device, false, yarn);
 
-#ifdef TYLOINFER_NATIVE_CUDA
         return rope.view();
-#else
-        return rope;
-#endif
     };
     model.rope = make_rope(::tyloi::Device(::tyloi::kCUDA, weights.placement.device));
     if (cpu_layers > 0) model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));
@@ -77,11 +71,7 @@ void load(Model& model, const tyloi::weights::Loader& weights, const LayerPlacem
         }
     const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
     model.embed = weights.embedding("model.token_embedding.weight", separate);
-#ifdef TYLOINFER_NATIVE_CUDA
     model.output_norm = weights.tensor("model.output_norm.weight");
-#else
-    model.output_norm = weights.tensor("model.output_norm.weight").dense();
-#endif
     model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
         : weights.placement.tensor.enabled()
             ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output) : model.embed;
@@ -96,16 +86,11 @@ void load(Model& model, const tyloi::weights::Loader& weights, const LayerPlacem
         TransformerWeightLoader loader{placed};
         const auto prefix = "model.block." + std::to_string(index) + ".";
         tyloi::models::load_attention_mixer(layer.attention, loader, config, index, prefix, 1.0);
-#ifdef TYLOINFER_NATIVE_CUDA
         layer.ffn_norm = placed.tensor(prefix + "mlp.norm.weight");
-#else
-        layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
-#endif
         layer.ffn = tyloi::models::load_dense_ffn<tyloi::models::Mlp>(loader, config, prefix + "mlp.");
     }
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 Model::Model() = default;
 Model::~Model() = default;
 Model::Model(Model&&) noexcept = default;
@@ -153,6 +138,5 @@ void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<co
         throw std::runtime_error("--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
     load(*result, weights, placement, result->cpu_layers, options.yarn);
 }
-#endif
 
 } // namespace tyloi::cuda::minicpmo45

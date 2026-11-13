@@ -17,7 +17,6 @@
 #include <vector>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA
 
 #include "engine/backends/cpu/native/host_parallel.h"
 #include "engine/backends/cuda/native/device.h"
@@ -114,8 +113,6 @@ inline void mfq_prepare_cuda_graph_memory(
         const std::vector<MfqCudaStream>& participant_streams) {
     graph.prepare_memory(participant_streams);
 }
-
-inline void mfq_debug_dump_cuda_graph(MfqCudaGraph&) {}
 
 inline MfqCudaStream mfq_get_current_cuda_stream(int device = -1) {
     return ::tyloi::cuda::current_stream(device);
@@ -214,159 +211,12 @@ inline void mfq_cuda_manual_seed_all(std::uint64_t seed) {
     ::tyloi::cuda::manual_seed(static_cast<std::int64_t>(seed));
 }
 
-#else
-
-#include <ATen/Parallel.h>
-#include <ATen/ops/scaled_dot_product_attention.h>
-#include <ATen/cuda/CUDAGraph.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <torch/extension.h>
-
-using mfq_half = ::at::Half;
-using mfq_bfloat16 = ::at::BFloat16;
-using MfqBackendError = ::c10::Error;
-inline constexpr auto mfq_float8_e4m3fn = ::at::kFloat8_e4m3fn;
-inline constexpr auto mfq_dispatch_half = ::at::ScalarType::Half;
-inline constexpr auto mfq_dispatch_bfloat16 = ::at::ScalarType::BFloat16;
-
-inline cudaStream_t mfq_current_cuda_stream() {
-    return ::at::cuda::getCurrentCUDAStream();
-}
-
-inline cublasHandle_t mfq_current_cublas_handle() {
-    return ::at::cuda::getCurrentCUDABlasHandle();
-}
-
-inline void mfq_cuda_synchronize() {
-    ::torch::cuda::synchronize();
-}
-
-#define TYLOINFER_RUNTIME_CHECK TORCH_CHECK
-#define TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK C10_CUDA_KERNEL_LAUNCH_CHECK
-#define TYLOINFER_CUDA_CHECK C10_CUDA_CHECK
-#define TYLOINFER_DISPATCH_FLOATING_TYPES_AND_HALF AT_DISPATCH_FLOATING_TYPES_AND_HALF
-#define TYLOINFER_DISPATCH_FLOATING_TYPES_AND2 AT_DISPATCH_FLOATING_TYPES_AND2
-using MfqCudaGuard = ::c10::cuda::CUDAGuard;
-using MfqCudaStream = ::at::cuda::CUDAStream;
-using MfqCudaStreamGuard = ::c10::cuda::CUDAStreamGuard;
-using MfqCudaGraph = ::at::cuda::CUDAGraph;
-
-inline void mfq_prepare_cuda_graph_memory(MfqCudaGraph& graph) {
-    const char* debug_path = tyloi::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
-    if (debug_path != nullptr && debug_path[0] != '\0') {
-        graph.enable_debug_mode();
-    }
-}
-
-inline void mfq_prepare_cuda_graph_memory(
-        MfqCudaGraph& graph,
-        const std::vector<MfqCudaStream>&) {
-    mfq_prepare_cuda_graph_memory(graph);
-}
-
-inline void mfq_debug_dump_cuda_graph(MfqCudaGraph& graph) {
-    const char* debug_path = tyloi::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
-    if (debug_path != nullptr && debug_path[0] != '\0') {
-        TYLOINFER_CUDA_CHECK(cudaGraphDebugDotPrint(
-            graph.raw_cuda_graph(), debug_path, cudaGraphDebugDotFlagsVerbose));
-    }
-}
-
-inline MfqCudaStream mfq_get_current_cuda_stream(int device = -1) {
-    return device < 0
-        ? ::at::cuda::getCurrentCUDAStream()
-        : ::at::cuda::getCurrentCUDAStream(device);
-}
-
-inline MfqCudaStream mfq_get_stream_from_pool(
-    bool high_priority = false,
-    int device = -1) {
-    return device < 0
-        ? ::at::cuda::getStreamFromPool(high_priority)
-        : ::at::cuda::getStreamFromPool(high_priority, device);
-}
-
-inline int mfq_current_cuda_device() {
-    return ::c10::cuda::current_device();
-}
-
-inline void mfq_cuda_empty_cache() {
-    ::c10::cuda::CUDACachingAllocator::emptyCache();
-}
-
-inline bool mfq_cuda_graph_capture_supported() { return true; }
-
-inline void mfq_cuda_record_stream(
-    const ::torch::Tensor& tensor,
-    const MfqCudaStream& stream) {
-    ::c10::cuda::CUDACachingAllocator::recordStream(
-        tensor.storage().data_ptr(), stream);
-}
-
-struct MfqCudaMemoryStats {
-    std::uint64_t allocated_bytes = 0;
-    std::uint64_t active_bytes = 0;
-    std::uint64_t reserved_bytes = 0;
-    std::uint64_t inactive_split_bytes = 0;
-    std::uint64_t requested_bytes = 0;
-    std::uint64_t peak_allocated_bytes = 0;
-    std::uint64_t peak_reserved_bytes = 0;
-    std::uint64_t allocations = 0;
-    std::uint64_t segments = 0;
-    std::uint64_t retries = 0;
-    std::uint64_t ooms = 0;
-};
-
-inline MfqCudaMemoryStats mfq_cuda_memory_stats(int device) {
-    const auto source = ::c10::cuda::CUDACachingAllocator::getDeviceStats(device);
-    constexpr auto aggregate = static_cast<std::size_t>(
-        ::c10::CachingDeviceAllocator::StatType::AGGREGATE);
-    return {
-        static_cast<std::uint64_t>(source.allocated_bytes[aggregate].current),
-        static_cast<std::uint64_t>(source.active_bytes[aggregate].current),
-        static_cast<std::uint64_t>(source.reserved_bytes[aggregate].current),
-        static_cast<std::uint64_t>(source.inactive_split_bytes[aggregate].current),
-        static_cast<std::uint64_t>(source.requested_bytes[aggregate].current),
-        static_cast<std::uint64_t>(source.allocated_bytes[aggregate].peak),
-        static_cast<std::uint64_t>(source.reserved_bytes[aggregate].peak),
-        static_cast<std::uint64_t>(source.allocation[aggregate].current),
-        static_cast<std::uint64_t>(source.segment[aggregate].current),
-        static_cast<std::uint64_t>(source.num_alloc_retries),
-        static_cast<std::uint64_t>(source.num_ooms),
-    };
-}
-
-inline int mfq_get_num_threads() { return ::at::get_num_threads(); }
-inline void mfq_set_num_threads(int count) { ::at::set_num_threads(count); }
-
-template <typename Function>
-void mfq_parallel_for(
-    std::int64_t begin,
-    std::int64_t end,
-    std::int64_t grain,
-    Function&& function) {
-    ::at::parallel_for(begin, end, grain, std::forward<Function>(function));
-}
-
-inline void mfq_disable_tf32_cublas() {
-    ::at::globalContext().setAllowTF32CuBLAS(false);
-}
-
-
-inline void mfq_cuda_manual_seed_all(std::uint64_t seed) {
-    ::torch::cuda::manual_seed_all(seed);
-}
-
-#endif
 
 template <typename Value>
 using MfqOptional = std::optional<Value>;
 
 inline constexpr std::nullopt_t mfq_nullopt = std::nullopt;
 
-#ifdef TYLOINFER_NATIVE_CUDA
 inline ::tyloi::DenseTensor mfq_linear(
     const ::tyloi::DenseTensor& input,
     const ::tyloi::DenseTensor& weight,
@@ -395,32 +245,3 @@ inline ::tyloi::DenseTensor mfq_scaled_dot_product_attention(
         query, key, value, mask, dropout, causal, scale,
         enable_grouped_query_attention);
 }
-#else
-inline ::at::Tensor mfq_linear(
-    const ::at::Tensor& input,
-    const ::at::Tensor& weight,
-    const std::optional<::at::Tensor>& bias = std::nullopt) {
-    return ::at::linear(input, weight, bias);
-}
-
-inline ::at::Tensor mfq_linear(
-    const ::at::Tensor& input,
-    const ::at::Tensor& weight,
-    const ::at::Tensor& bias) {
-    return mfq_linear(input, weight, std::optional<::at::Tensor>(bias));
-}
-
-inline ::at::Tensor mfq_scaled_dot_product_attention(
-    const ::at::Tensor& query,
-    const ::at::Tensor& key,
-    const ::at::Tensor& value,
-    const std::optional<::at::Tensor>& mask,
-    double dropout,
-    bool causal,
-    const std::optional<double>& scale,
-    bool enable_grouped_query_attention) {
-    return ::at::scaled_dot_product_attention(
-        query, key, value, mask, dropout, causal, scale,
-        enable_grouped_query_attention);
-}
-#endif

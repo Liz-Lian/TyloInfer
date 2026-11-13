@@ -1,4 +1,3 @@
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/engine.h"
 #include "engine/budget.h"
 #include "engine/generation/decode.h"
@@ -336,4 +335,3 @@ StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) 
         request.input, *request.output, id);
 }
 } // namespace tyloi::engine
-#endif

@@ -1,5 +1,4 @@
 #pragma once
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/memory.h"
 #include "tensor.h"
 #include <map>
@@ -87,4 +86,3 @@ public:
 private:
     std::shared_ptr<State> state_;
 };
-#endif

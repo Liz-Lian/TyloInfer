@@ -65,14 +65,8 @@ public:
     TextSessionState capture_text_session_state(const std::vector<std::int64_t>&) const override;
     /** Estimate allocations required to restore a compatible snapshot. */
     std::vector<std::pair<tyloi::Device, std::size_t>> restore_growth(const TextSessionState&) const override;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Validate a snapshot and retain staged storage until publication. */
     std::unique_ptr<tyloi::models::Restore> prepare_restore(const TextSessionState&) override;
-#endif
-#ifndef TYLOINFER_NATIVE_CUDA
-    /** Restore a compatible text session snapshot. */
-    void restore_text_session_state(const TextSessionState&) override;
-#endif
 
     struct MambaLayout {
         std::int64_t heads, head_dim, state_size, groups, conv_kernel;
@@ -96,10 +90,8 @@ public:
 private:
     const Model* model_;
     std::vector<Layout> layout_;
-#ifdef TYLOINFER_NATIVE_CUDA
     class Candidate;
     std::vector<::tyloi::Tensor> graph_views_;
-#endif
 };
 
 } // namespace tyloi::cuda::nemotron_h

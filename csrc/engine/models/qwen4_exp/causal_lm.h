@@ -9,14 +9,9 @@ namespace tyloi::models::qwen4_exp {
 
 template <class Loader>
 auto load_residual(Loader &ops, const Config &c, const std::string &p, bool combine) {
-#ifdef TYLOINFER_NATIVE_CUDA
     auto norm = std::make_shared<::tyloi::DenseTensor>(
         ops.dense(p + ".norm.weight").dense()
             .to(::tyloi::kFloat32).contiguous());
-#else
-    auto norm = ops.dense(p + ".norm.weight").dense()
-                    .to(::tyloi::kFloat32).contiguous();
-#endif
     auto down = ops.residual_linear(p + ".down.weight"), up = ops.residual_linear(p + ".up.weight");
     decltype(down) injection{};
     if (combine)
@@ -53,15 +48,8 @@ auto load_ple(Loader &ops, const Config &c, const std::string &p) {
          sizes = ops.integers(p + ".ngram.head_vocab_sizes");
     typename Loader::PleWeights w{
         ops.weight(p + ".key.weight"), ops.weight(p + ".value.weight"),
-#ifdef TYLOINFER_NATIVE_CUDA
         ops.dense(p + ".key_norm.weight"), ops.dense(p + ".query_norm.weight"),
         ops.dense(p + ".conv_norm.weight"), ops.dense(p + ".conv.weight")};
-#else
-        ops.dense(p + ".key_norm.weight").dense(),
-        ops.dense(p + ".query_norm.weight").dense(),
-        ops.dense(p + ".conv_norm.weight").dense(),
-        ops.dense(p + ".conv.weight").dense()};
-#endif
     return ops.ple(std::move(shards), rows, width, c, std::move(multipliers), std::move(offsets),
                    std::move(sizes), std::move(w));
 }
@@ -96,29 +84,17 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         return false;
     }
     result.config = c;
-#ifdef TYLOINFER_NATIVE_CUDA
     result.embedding_norm = ::tyloi::ops::contiguous(::tyloi::ops::cast(
         ops.dense("predictor.embedding_norm.weight"), ::tyloi::kFloat32));
     result.hidden_norm = ::tyloi::ops::contiguous(::tyloi::ops::cast(
         ops.dense("predictor.hidden_norm.weight"), ::tyloi::kFloat32));
-#else
-    result.embedding_norm = ops.dense("predictor.embedding_norm.weight").dense()
-                                .to(::tyloi::kFloat32).contiguous();
-    result.hidden_norm = ops.dense("predictor.hidden_norm.weight").dense()
-                             .to(::tyloi::kFloat32).contiguous();
-#endif
     result.embedding_fusion = ops.weight("predictor.fusion.embedding.weight");
     result.hidden_fusion = ops.weight("predictor.fusion.hidden.weight");
     result.final_mixer = ops.final_mixer(load_residual(ops, c, "predictor.mhc.pre", false));
     for (int64_t i = 0; i < count; ++i)
         result.layers.push_back(ops.layer(c, int(i), true));
-#ifdef TYLOINFER_NATIVE_CUDA
     require_model(result.embedding_norm.dim() == 1 && result.embedding_norm.size(0) == c.hidden &&
                       result.hidden_norm.dim() == 1 && result.hidden_norm.size(0) == c.hidden * c.streams,
-#else
-    require_model(result.embedding_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
-                      result.hidden_norm.sizes().vec() == std::vector<int64_t>{c.hidden * c.streams},
-#endif
                   "Qwen4-Exp MTP normalization width disagrees with backbone");
     return true;
 }

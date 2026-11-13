@@ -11,13 +11,7 @@ namespace tyloi::cuda::deepseek_v41 {
 
 std::unique_ptr<tyloi::models::Mtp> load_components(
         Model& model, const tyloi::weights::Loader& weights, bool load_optional_components
-#ifndef TYLOINFER_NATIVE_CUDA
-        , CudaExecutionContext& execution
-#endif
         ) {
-#ifndef TYLOINFER_NATIVE_CUDA
-    auto& cache = execution.weights;
-#endif
     if (!load_optional_components) return {};
     if ((model.plan.vision != ::tyloi::models::Vision::none &&
          model.plan.vision != ::tyloi::models::Vision::deepseek_v41) ||
@@ -28,18 +22,12 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
     if (model.plan.vision == ::tyloi::models::Vision::deepseek_v41) {
         model.vision = std::make_unique<deepseek_v41_runtime::Vision>(
             deepseek_v41_runtime::Vision::load(model.source, weights,
-#ifndef TYLOINFER_NATIVE_CUDA
-                cache,
-#endif
                 model.config));
     }
     if (model.plan.predictor == ::tyloi::models::Predictor::none) return {};
     TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation() && model.tables.engram_parameters,
         "invalid DeepSeek-V4.1 DSpark model");
     return deepseek_v41_runtime::load_dspark_if_present(
-#ifndef TYLOINFER_NATIVE_CUDA
-        execution,
-#endif
         weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping);
 }

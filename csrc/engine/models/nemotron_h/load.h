@@ -12,12 +12,10 @@ namespace tyloi::models { struct LoadOptions; }
 
 namespace tyloi::cuda::nemotron_h {
 
-#ifdef TYLOINFER_NATIVE_CUDA
 /** Load native model weights and optional components through the public factory. */
 void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource>,
     std::string_view definition, const tyloi::weights::Loader&, LayerPlacementConfig&,
     const tyloi::models::LoadOptions&);
-#endif
 Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definition, std::int64_t context);
 void load(Model&, const ::tyloi::weights::Loader&, LayerPlacementConfig&,
           int gpu_layers = -1, bool expert_parallel = false, bool load_layers = true,

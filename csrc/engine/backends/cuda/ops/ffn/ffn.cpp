@@ -13,9 +13,6 @@
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/backends/cuda/ops/projection/projection.h"
-#endif
 #include "engine/ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
@@ -56,11 +53,7 @@ bool uses_expert_cache(const Weights& f) {
 template<class Weights>
 Mlp dense(const Weights& f, const Projector& project) {
     TYLOINFER_RUNTIME_CHECK(f.down, "FFN down projection is missing");
-#ifdef TYLOINFER_NATIVE_CUDA
     return {project.group(f.gate_up), f.down, f.activation, f.geglu, f.swiglu_limit};
-#else
-    return {make_quant_group(f.gate_up, true, false), *f.down, f.activation, f.geglu, f.swiglu_limit};
-#endif
 }
 
 DenseTensor half(DenseTensor x, CudaProfiler& profiler) {
@@ -736,22 +729,15 @@ DenseTensor ffn_run(const Weights& f, DenseTensor x, Executor& executor, const F
     return ffn_forward_impl(f, std::move(x), executor, mode, project, std::move(input_ids),
                             true, std::move(router_bias));
 }
-#ifdef TYLOINFER_NATIVE_CUDA
 DenseTensor Ffn::forward(DenseTensor x, std::optional<DenseTensor> input_ids,
                     std::optional<DenseTensor> router_bias) const {
     auto& executor = Executor::current();
     const auto& mode = Executor::current_ffn();
-#else
-DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const FfnMode& mode,
-                    std::optional<DenseTensor> input_ids,
-                    std::optional<DenseTensor> router_bias) const {
-#endif
     return ffn_run(*this, std::move(x), executor, mode, std::move(input_ids), std::move(router_bias));
 }
 
 } // namespace tyloi::cuda
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::ops {
 namespace {
 DenseTensor qwen_router(const DenseTensor& source, const Tensor& router, std::int64_t rows) {
@@ -814,4 +800,3 @@ Tensor ffn(const FfnWeights& weights, const Tensor& input, const Tensor& ids,
     return result;
 }
 } // namespace tyloi::ops
-#endif

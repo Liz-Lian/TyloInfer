@@ -4,10 +4,8 @@
 #include "engine/models/source/model_config.h"
 #include "engine/ops.h"
 #include "engine/models/metadata.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
 #include "engine/models/load.h"
-#endif
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/models/metadata.h"
@@ -25,11 +23,8 @@ namespace tyloi::cuda::minicpmo45 {
 
 // The standalone TTS checkpoint uses offset RMS weights, unlike composite Tts.
 struct Model
-#ifdef TYLOINFER_NATIVE_CUDA
     : tyloi::models::CausalModel
-#endif
 {
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Create an empty movable model before loading weights. */
     Model();
     ~Model() override;
@@ -37,27 +32,16 @@ struct Model
     Model& operator=(Model&&) noexcept;
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
-#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     ::tyloi::models::Plan plan;
     tyloi::models::ModelConfig config;
     tyloi::models::CausalLmMetadata metadata;
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::RopeTable rope, cpu_rope;
     std::unordered_map<int, tyloi::ops::RopeTable> device_ropes;
-#else
-    RopeCache rope, cpu_rope;
-    std::unordered_map<int, RopeCache> device_ropes;
-#endif
     ::tyloi::Tensor embed, lm_head;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor output_norm;
-#else
-    DenseTensor output_norm;
-#endif
     std::vector<Layer> layers;
-#ifdef TYLOINFER_NATIVE_CUDA
     int primary_device = 0, cpu_layers = 0;
     /** Describe model dimensions and execution capabilities. */
     tyloi::models::Info info() const override;
@@ -81,14 +65,11 @@ struct Model
     /** Run a request step with explicit input and numerical policy. */
     Tensor forward(tyloi::models::Input, tyloi::models::State&,
                    const tyloi::models::ForwardOptions& = {}) const override;
-#endif
 };
 
-#ifdef TYLOINFER_NATIVE_CUDA
 /** Load standalone TTS weights using a resolved source and placement. */
 void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource>, std::string_view definition,
     const tyloi::weights::Loader&, LayerPlacementConfig&, const tyloi::models::LoadOptions&);
-#endif
 Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definition, int64_t context);
 void load(Model&, const tyloi::weights::Loader&, const LayerPlacementConfig&, int cpu_layers,
           const tyloi::ops::YarnScaling&);

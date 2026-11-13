@@ -1,5 +1,4 @@
 #include "engine/ops/engram.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"
 #include "backend.h"
@@ -53,4 +52,3 @@ Tensor engram(const Tensor& hidden, const Tensor& selected, const Tensor& gather
     return result;
 }
 } // namespace tyloi::ops
-#endif

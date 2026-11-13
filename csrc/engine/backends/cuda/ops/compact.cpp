@@ -1,6 +1,5 @@
 #include "engine/ops/compact.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "backend.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
@@ -48,4 +47,3 @@ Tensor Compact::forward(const Tensor& logits) const {
     return result;
 }
 } // namespace tyloi::ops
-#endif

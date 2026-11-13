@@ -48,17 +48,10 @@ public:
     double swiglu_limit = 0.0;
     int moe_layer = -1;
 
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::DenseTensor forward(
         ::tyloi::DenseTensor input,
         std::optional<::tyloi::DenseTensor> input_ids = std::nullopt,
         std::optional<::tyloi::DenseTensor> router_bias = std::nullopt) const;
-#else
-    ::tyloi::DenseTensor forward(
-        ::tyloi::DenseTensor input, Executor& executor, const FfnMode& mode,
-        std::optional<::tyloi::DenseTensor> input_ids = std::nullopt,
-        std::optional<::tyloi::DenseTensor> router_bias = std::nullopt) const;
-#endif
 
 };
 

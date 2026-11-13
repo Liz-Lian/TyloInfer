@@ -3,11 +3,6 @@
 #include "engine/models/common/ffn.h"
 
 #include "engine/models/qwen35/state.h"
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/backends/cuda/native/collectives.h"
-#include "engine/backends/cuda/ops/norm/rms.h"
-#include "engine/backends/cuda/ops/projection/quant_linear.h"
-#endif
 #include "engine/ops.h"
 
 #include <array>
@@ -31,7 +26,6 @@ std::vector<MtpState::Layout> layout(const Predictor& model, int device) {
 
 } // namespace
 
-#ifdef TYLOINFER_NATIVE_CUDA
 Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding, tyloi::ops::RopeTable rope,
         int device)
     : model_(std::move(model)), embedding_(std::move(embedding)), rope_(std::move(rope)),
@@ -40,28 +34,9 @@ Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding, tyloi::ops::RopeTable rope,
         if (layer.ffn.is_moe || (layer.ffn.important_neurons && layer.ffn.important_neurons->is_moe))
             throw std::runtime_error("Qwen MTP requires dense predictor projections");
 }
-#else
-Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding,
-        RopeCache rope,
-        std::unique_ptr<Executor> executor, Collectives& copies,
-        int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
-        bool preallocate)
-    : model_(std::move(model)), embedding_(std::move(embedding)), rope_(std::move(rope)),
-      executor_(std::move(executor)), copies_(copies), device_(device),
-      kv_capacity_(kv_capacity), trace_(trace), trace_scope_(trace_scope), preallocate_(preallocate) {
-    for (const auto& layer : model_.layers)
-        TYLOINFER_RUNTIME_CHECK(!layer.ffn.is_moe &&
-            (!layer.ffn.important_neurons || !layer.ffn.important_neurons->is_moe),
-            "Qwen MTP requires dense predictor projections");
-}
-
-#endif
 
 std::unique_ptr<tyloi::models::MtpState> Mtp::make_state() const {
     auto result = std::make_unique<MtpState>(*this, layout(model_, device_), model_.config.hidden_size);
-#ifndef TYLOINFER_NATIVE_CUDA
-    if (preallocate_) result->prepare(1, 1);
-#endif
     return result;
 }
 
@@ -69,7 +44,6 @@ void Mtp::reset(tyloi::models::MtpState& value, int64_t batch) const {
     state<MtpState>(value).reset(batch);
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 std::vector<std::pair<Device, std::size_t>> Mtp::growth(
         const tyloi::models::MtpState& value, const tyloi::models::Mtp::Input& input) const {
     const auto* step = std::get_if<tyloi::models::Mtp::Step>(&input);
@@ -147,108 +121,6 @@ Tensor Mtp::evaluate(MtpState& state, const Tensor& hidden, const Tensor& next_i
     state.advance(tokens);
     return output;
 }
-#else
-tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::Tensor& hidden,
-        const ::tyloi::Tensor& next_ids, const ::tyloi::Tensor& positions,
-        const tyloi::models::ForwardOptions&) const {
-    auto output = std::make_shared<::tyloi::DenseTensor>(evaluate(
-        state<MtpState>(value),
-        hidden.dense(),
-        next_ids.dense(),
-        positions.defined() ? positions.dense()
-                                          : ::tyloi::DenseTensor{}));
-    return {output, output};
-}
-
-::tyloi::DenseTensor Mtp::evaluate(MtpState& state, ::tyloi::DenseTensor hidden,
-        ::tyloi::DenseTensor next_ids, ::tyloi::DenseTensor positions) const {
-    const auto& config = model_.config;
-    TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && next_ids.dim() == 2 &&
-        hidden.size(0) == next_ids.size(0) && hidden.size(1) == next_ids.size(1) &&
-        hidden.size(2) == config.hidden_size && hidden.size(0) > 0 && hidden.size(1) > 0,
-        "Qwen MTP inputs must be matching [B,T,H] hidden states and [B,T] next-token IDs");
-    const auto batch = hidden.size(0), tokens = hidden.size(1);
-    TYLOINFER_RUNTIME_CHECK(state.position() <= config.max_position_embeddings - tokens,
-        "Qwen MTP history exceeds context capacity");
-    const int device = device_;
-    MfqCudaGuard guard(device);
-    const FfnMode mode{};
-    auto executor_scope = executor_->enter(device);
-    const bool explicit_positions = positions.defined();
-    auto pos = explicit_positions
-        ? copies_.copy(std::move(positions), device).to(::tyloi::kInt64).contiguous()
-        : ::tyloi::cuda::arange(state.position(), state.position() + tokens,
-            ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64));
-    TYLOINFER_RUNTIME_CHECK((pos.dim() == 1 && pos.numel() == tokens) ||
-        (pos.dim() == 2 && pos.size(1) == tokens &&
-            (pos.size(0) == batch || (pos.size(0) == 3 && !config.mrope_sections.empty()))),
-        "Qwen MTP positions must have shape [T], [B,T], or configured grid-MRoPE [3,T]");
-
-    state.prepare(batch, tokens, kv_capacity_);
-    const auto kv = state.views();
-    auto trace_for = [&](int scope) -> Trace* {
-        return trace_ && trace_scope_ == scope ? trace_ : nullptr;
-    };
-    auto record = [&](Trace* trace, const char* name, const ::tyloi::DenseTensor& value) {
-        if (trace == nullptr) return;
-        trace->emplace_back(std::string(name), value.to(::tyloi::kFloat32).contiguous().clone());
-    };
-    auto project = executor_->projector(mode);
-    ::tyloi::DenseTensor current;
-    {
-        auto normalized_ids = copies_.copy(next_ids.to(::tyloi::kInt64), device_).contiguous();
-        auto embedded = executor_->profiler().measure("model.embed", [&] {
-            return quant_embedding_lookup(embedding_, std::move(normalized_ids));
-        });
-        embedded = embedded.to(::tyloi::kFloat16).contiguous().to(hidden.scalar_type());
-        auto embedded_norm = qwen_rms_norm(
-            embedded.reshape({-1, embedded.size(-1)}).to(::tyloi::kFloat32),
-            model_.embedding_norm, config.rms_norm_eps,
-            config.legacy_tensor_layout.norm_weight_offset).reshape_as(embedded);
-        auto hidden_norm = qwen_rms_norm(
-            hidden.reshape({-1, hidden.size(-1)}).to(::tyloi::kFloat32), model_.hidden_norm,
-            config.rms_norm_eps, config.legacy_tensor_layout.norm_weight_offset).reshape_as(hidden);
-        record(trace_for(0), "mtp.embedding_norm", embedded_norm);
-        record(trace_for(0), "mtp.hidden_norm", hidden_norm);
-        current = project.run(model_.fusion,
-            ::tyloi::cuda::cat({embedded_norm, hidden_norm}, -1));
-        record(trace_for(0), "mtp.fusion", current);
-        hidden = {};
-    }
-
-    AttentionStep attention;
-    attention.positions = pos;
-    attention.cache_position = state.position();
-    if (tokens == 1 && state.position() > 0)
-        attention.sequence_lengths = ::tyloi::cuda::full({batch}, state.position() + 1, pos.options());
-    if (explicit_positions)
-        attention.cache_positions = ::tyloi::cuda::arange(state.position(), state.position() + tokens, pos.options());
-
-    for (std::size_t index = 0; index < model_.layers.size(); ++index) {
-        const auto& layer = model_.layers[index];
-        const auto& full_attention = layer.attention;
-        TYLOINFER_RUNTIME_CHECK(!layer.ffn.is_moe &&
-            (!layer.ffn.important_neurons || !layer.ffn.important_neurons->is_moe),
-            "Qwen MTP requires dense predictor projections");
-        auto attention_output = full_attention.forward(project, executor_->profiler(),
-            executor_->attention_options(), std::move(current), attention, kv[index],
-            executor_->attention_scratch(index), rope_, trace_for(full_attention.layer));
-        current = ::tyloi::models::full_ffn(
-            layer.ffn, layer.ffn_norm, std::move(attention_output[0]),
-            std::move(attention_output[1]), full_attention.rms_norm_eps,
-            full_attention.norm_weight_offset, full_attention.official_bf16,
-            full_attention.attention_output_gate, trace_for(full_attention.layer)).dense();
-    }
-    auto output = qwen_rms_norm(
-        current.reshape({-1, current.size(-1)}).to(::tyloi::kFloat32), model_.output_norm,
-        config.rms_norm_eps, config.legacy_tensor_layout.norm_weight_offset).reshape_as(current);
-    record(trace_for(0), "mtp.output_norm", output);
-    auto result = std::move(output);
-    state.advance(tokens);
-    return result;
-}
-
-#endif
 
 void Mtp::trim_cache_to(tyloi::models::MtpState& value, int64_t position) const {
     state<MtpState>(value).trim(position);
@@ -256,39 +128,8 @@ void Mtp::trim_cache_to(tyloi::models::MtpState& value, int64_t position) const 
 
 MtpSessionState Mtp::capture_session_state(const tyloi::models::MtpState& value,
                                            int64_t position, const ::tyloi::Tensor& hidden) const {
-#ifndef TYLOINFER_NATIVE_CUDA
-    MfqCudaGuard guard(device_);
-#endif
     return state<MtpState>(value).capture(position, hidden.dense());
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA
-void restore_session(State& state, Mtp* mtp, const TextSessionState& snapshot,
-        const std::function<void()>& drain) {
-    auto target = state.prepare(snapshot);
-    std::optional<MtpState::Restore> predictor;
-    MtpState* predictor_state = nullptr;
-    if (mtp != nullptr) {
-        if (!state.predictor || !snapshot.mtp || snapshot.mtp->cache_pos != snapshot.cache_pos - 1)
-            throw CudaSessionStateError("Qwen MTP session boundary is incompatible");
-        predictor_state = &mtp->state<MtpState>(*state.predictor);
-        predictor.emplace(predictor_state->prepare(*snapshot.mtp));
-    }
-    try {
-        state.stage(target, snapshot);
-        if (predictor_state) predictor_state->stage(*predictor, *snapshot.mtp);
-        drain();
-        state.publish(std::move(target));
-        if (predictor_state) predictor_state->publish(std::move(*predictor));
-    } catch (...) {
-        const auto error = std::current_exception();
-        try {
-            drain();
-        } catch (...) {
-        }
-        std::rethrow_exception(error);
-    }
-}
-#endif
 
 } // namespace tyloi::cuda::qwen35

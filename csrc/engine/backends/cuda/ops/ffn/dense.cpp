@@ -1,6 +1,5 @@
 #include "dense.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
@@ -136,5 +135,3 @@ std::optional<DenseTensor> mlp_residual(DenseTensor input, DenseTensor residual,
 }
 
 } // namespace tyloi::cuda::ops
-
-#endif

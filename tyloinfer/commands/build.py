@@ -300,12 +300,7 @@ def create_build_plan(
             ]
         )
     else:
-        configure.extend(
-            [
-                "-DTYLOINFER_BUILD_METAL_RUNTIME=OFF",
-                "-DTYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME=OFF",
-            ]
-        )
+        configure.append("-DTYLOINFER_BUILD_METAL_RUNTIME=OFF")
     if selected == "hip":
         configure.extend(
             [

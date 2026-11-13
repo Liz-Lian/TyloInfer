@@ -172,11 +172,9 @@ QuantLinearGroup make_quant_group(
         group_nint && !cpu_layer && !any_tensor_parallel) {
         result.nint_grouped = true;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-#ifdef TYLOINFER_NATIVE_CUDA
         std::optional<MfqCudaGuard> guard;
         if (!nint_weights.empty() && nint_weights.front().q_packed.is_cuda())
             guard.emplace(nint_weights.front().q_packed.device());
-#endif
         result.nint = make_linear_group(nint_weights);
 #endif
     } else {
@@ -206,11 +204,7 @@ DenseLinearGroup make_dense_group(const std::vector<::tyloi::Tensor>& ws) {
         parts.push_back(w.to(::tyloi::kFloat32));
     }
     auto joined = ::tyloi::cuda::cat(parts, 0).contiguous();
-#ifdef TYLOINFER_NATIVE_CUDA
     g.w = std::make_shared<::tyloi::DenseTensor>(std::move(joined));
-#else
-    g.w = std::move(joined);
-#endif
     return g;
 }
 
@@ -310,13 +304,8 @@ DenseLinearGroup make_fp32_quant_group(
         parts.push_back(dequant_quant_linear_f32(collectives, primary, weight));
     }
     auto joined = ::tyloi::cuda::cat(parts, 0).contiguous();
-#ifdef TYLOINFER_NATIVE_CUDA
     dense.w = std::make_shared<::tyloi::DenseTensor>(std::move(joined));
     const auto& grouped = dense.w;
-#else
-    dense.w = std::move(joined);
-    const auto& grouped = dense.w;
-#endif
     TYLOINFER_RUNTIME_CHECK(
         grouped.dim() == 2 &&
             grouped.size(0) == std::accumulate(

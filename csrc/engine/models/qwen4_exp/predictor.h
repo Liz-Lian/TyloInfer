@@ -5,16 +5,9 @@
 #include "engine/models/common/attention_ops.h"
 #include "engine/models/qwen4_exp/config.h"
 
-#ifndef TYLOINFER_NATIVE_CUDA
-struct CudaExecutionContext;
-#endif
 namespace tyloi::weights { struct Loader; }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::ops { class Residual; }
-#else
-namespace tyloi::cuda { class GatedResidual; }
-#endif
 
 namespace tyloi::cuda::qwen4_exp {
 using attention_ops::Linear;
@@ -30,11 +23,7 @@ struct PredictorState final : tyloi::models::MtpState {
     std::vector<std::int64_t> head_positions() const override { return lengths; }
 
     std::vector<std::unique_ptr<LayerState>> layer_states;
-#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<::tyloi::Tensor> positions;
-#else
-    std::vector<::tyloi::DenseTensor> positions;
-#endif
     std::vector<int64_t> lengths;
     int64_t batch = 0;
 };
@@ -46,44 +35,23 @@ struct Predictor final : tyloi::models::Mtp {
     ::tyloi::Tensor embedding, output;
     double softcap = 0;
     int primary = 0;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor embedding_norm, hidden_norm;
-#else
-    DenseTensor embedding_norm, hidden_norm;
-#endif
     Linear embedding_fusion, hidden_fusion;
-#ifdef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<tyloi::ops::Residual> final_mixer;
-#else
-    std::unique_ptr<GatedResidual> final_mixer;
-#endif
     std::vector<std::unique_ptr<Layer>> layers;
-#ifndef TYLOINFER_NATIVE_CUDA
-    CudaExecutionContext *execution = nullptr;
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     bool history_stream = true, history_bootstrap = true, history_early_flush = true, history_cache_only = true;
     int history_host = -1;
-#endif
 
     Predictor();
     ~Predictor() override;
     Predictor(Predictor&&) noexcept;
     Predictor& operator=(Predictor&&) noexcept;
 
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Load predictor weights, if present, using the model's rotary policy. */
     static std::optional<Predictor> load_if_present(const tyloi::weights::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
                                                       ::tyloi::Tensor embedding, ::tyloi::Tensor output,
                                                       double softcap, const tyloi::ops::YarnScaling& yarn);
-#else
-    static std::optional<Predictor> load_if_present(CudaExecutionContext &execution,
-                                                      const tyloi::weights::Loader& weights,
-                                                      const tyloi::models::qwen4_exp::Config &main,
-                                                      ::tyloi::Tensor embedding, ::tyloi::Tensor output,
-                                                      double softcap);
-#endif
 
     DenseTensor embed(DenseTensor ids) const;
     DenseTensor logits(DenseTensor hidden) const;
@@ -92,11 +60,9 @@ struct Predictor final : tyloi::models::Mtp {
     /** Return the incoming multistream predictor width. */
     std::int64_t width() const override { return hidden_norm.numel(); }
     void reset(tyloi::models::MtpState&, int64_t next_batch = 1) const override;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Plan persistent cache and position backing for a predictor step. */
     std::vector<std::pair<::tyloi::Device, std::size_t>> growth(
         const tyloi::models::MtpState&, const tyloi::models::Mtp::Input&) const override;
-#endif
 
     std::pair<DenseTensor, DenseTensor> evaluate(tyloi::models::MtpState&, const DenseTensor &hidden,
                                        const DenseTensor &ids, int64_t depth = 0, bool cache = true,
@@ -110,14 +76,12 @@ struct Predictor final : tyloi::models::Mtp {
     tyloi::models::MtpStep step(tyloi::models::MtpState&, const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
                                 const tyloi::Tensor& positions = {},
                                 const tyloi::models::ForwardOptions& options = {}) const override;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Resolve prompt history behavior from frozen model policy and available memory. */
     History history(std::int64_t tokens, std::int64_t requested, std::size_t available) const override;
     /** Prime predictor history while optionally omitting output computation. */
     void prime(tyloi::models::MtpState&, const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
         const tyloi::Tensor& positions, bool cache_only,
         const tyloi::models::ForwardOptions& options = {}) const override;
-#endif
     void history_step(tyloi::models::MtpState&, DenseTensor hidden, DenseTensor ids, DenseTensor positions = {},
                       bool scalar_chain = false) const;
 
@@ -130,20 +94,12 @@ struct Predictor final : tyloi::models::Mtp {
     bool preserve_output_dtype() const noexcept override;
     std::unique_ptr<tyloi::engine::mtp::DepthPolicy> depth_policy(
         int maximum_depth, tyloi::engine::mtp::PolicyState& state) const override;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Check session support against the owning predictor request state. */
     bool supports_session_state(const tyloi::models::MtpState&) const noexcept override;
-#else
-    bool supports_session_state() const noexcept override;
-#endif
     MtpSessionState capture_session_state(const tyloi::models::MtpState&, int64_t,const tyloi::Tensor&) const override;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Prepare an owned predictor snapshot for a joint session restore. */
     std::unique_ptr<tyloi::models::Restore> prepare_restore(
         tyloi::models::MtpState&, const MtpSessionState&) const override;
-#else
-    void restore_session_state(tyloi::models::MtpState&, const MtpSessionState&) const override;
-#endif
 };
 
 } // namespace tyloi::cuda::qwen4_exp

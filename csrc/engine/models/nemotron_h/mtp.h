@@ -4,18 +4,13 @@
 #include "engine/models/session/snapshot.h"
 #include "engine/backends/cuda/executor/options.h"
 
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/backends/cuda/executor/execution.h"
-#endif
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/predictor.h"
 #include "engine/state/kv_view.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
-#endif
 
 #include <algorithm>
 #include <array>
@@ -55,26 +50,14 @@ struct Mtp final : tyloi::models::Mtp {
     ::tyloi::Tensor embedding;
     int primary = 0;
     ::tyloi::Tensor fusion;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor embedding_norm, hidden_norm, output_norm;
-#else
-    DenseTensor embedding_norm, hidden_norm, output_norm;
-#endif
     std::vector<Layer> layers;
-#ifndef TYLOINFER_NATIVE_CUDA
-    CudaExecutionContext *execution = nullptr;
-    std::unique_ptr<Executor> executor;
-#endif
 
     // The predictor history shares the backbone context limit, which the
     // loader may have overridden with --ctx-size.
     int64_t predictor_capacity() const noexcept { return config.max_position_embeddings; }
 
-#ifdef TYLOINFER_NATIVE_CUDA
     static std::optional<Mtp> load_if_present(
-#else
-    static std::optional<Mtp> load_if_present(CudaExecutionContext &execution,
-#endif
                                               const ::tyloi::weights::Loader& weights,
                                               const tyloi::models::nemotron_h::Config &main,
                                               ::tyloi::Tensor embedding) {
@@ -88,37 +71,18 @@ struct Mtp final : tyloi::models::Mtp {
                           "Nemotron-H MTP requires one declared predictor stage");
         Mtp result;
         result.config = main;
-#ifndef TYLOINFER_NATIVE_CUDA
-        result.execution = &execution;
-        result.executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-#endif
         result.embedding = std::move(embedding);
         result.primary = weights.placement.device;
-#ifdef TYLOINFER_NATIVE_CUDA
         result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
         result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
         result.output_norm = weights.tensor("predictor.output_norm.weight");
-#else
-        result.embedding_norm = weights.tensor("predictor.embedding_norm.weight").dense();
-        result.hidden_norm = weights.tensor("predictor.hidden_norm.weight").dense();
-        result.output_norm = weights.tensor("predictor.output_norm.weight").dense();
-#endif
         result.fusion = weights.weight("predictor.fusion.weight");
-#ifdef TYLOINFER_NATIVE_CUDA
         TYLOINFER_RUNTIME_CHECK(result.fusion.size(1) == 2 * main.hidden_size &&
                               result.fusion.size(0) == main.hidden_size &&
                               result.embedding_norm.numel() == main.hidden_size &&
                               result.hidden_norm.numel() == main.hidden_size &&
                               result.output_norm.numel() == main.hidden_size,
                           "Nemotron-H MTP fusion/norm dimensions disagree with the backbone");
-#else
-        TYLOINFER_RUNTIME_CHECK(result.fusion->size(1) == 2 * main.hidden_size &&
-                              result.fusion->size(0) == main.hidden_size &&
-                              result.embedding_norm.numel() == main.hidden_size &&
-                              result.hidden_norm.numel() == main.hidden_size &&
-                              result.output_norm.numel() == main.hidden_size,
-                          "Nemotron-H MTP fusion/norm dimensions disagree with the backbone");
-#endif
         for (std::size_t index = 0; index < main.mtp_mixers.size(); ++index) {
             const auto type =
                 std::string(tyloi::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
@@ -163,7 +127,6 @@ struct Mtp final : tyloi::models::Mtp {
         state.batch = next_batch;
     }
 
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Plan new predictor KV backing for the next step without allocating it. */
     std::vector<std::pair<::tyloi::Device, std::size_t>> growth(
             const tyloi::models::MtpState& value, const tyloi::models::Mtp::Input& input) const override {
@@ -205,7 +168,6 @@ struct Mtp final : tyloi::models::Mtp {
             {::tyloi::Device(::tyloi::kCUDA, primary), bytes}} :
             std::vector<std::pair<::tyloi::Device, std::size_t>>{};
     }
-#endif
 
     std::pair<DenseTensor, DenseTensor> evaluate(tyloi::models::MtpState& value,
                                        const DenseTensor &hidden,
@@ -216,80 +178,43 @@ struct Mtp final : tyloi::models::Mtp {
             using DenseTensor = ::tyloi::DenseTensor;
             const Mtp &model;
             PredictorState& state;
-#ifdef TYLOINFER_NATIVE_CUDA
             tyloi::models::ForwardOptions mode;
-#else
-            Executor::Mode mode;
-#endif
             static int rank(const DenseTensor &x) { return x.dim(); }
             static int64_t size(const DenseTensor &x, int axis) { return x.size(axis); }
             static int64_t elements(const DenseTensor &x) { return x.numel(); }
             static bool defined(const DenseTensor &x) { return x.defined(); }
             DenseTensor embed(DenseTensor ids, const DenseTensor &like) {
-#ifdef TYLOINFER_NATIVE_CUDA
                 auto embedded = tyloi::ops::embedding(::tyloi::Tensor(std::move(ids)), model.embedding);
                 return tyloi::ops::contiguous(tyloi::ops::cast(
                     embedded, like.scalar_type())).dense();
-#else
-                return tyloi::cuda::embed(model.embedding, std::move(ids),
-                    model.execution->executor().collectives(), model.execution->executor().profiler(), model.primary)
-                    .to(like.scalar_type());
-#endif
             }
             DenseTensor normalize(const DenseTensor &x, tyloi::models::nemotron_h::PredictorNorm role) {
                 using Norm = tyloi::models::nemotron_h::PredictorNorm;
                 const auto &weight = role == Norm::embedding ? model.embedding_norm
                                      : role == Norm::hidden  ? model.hidden_norm
                                                              : model.output_norm;
-#ifdef TYLOINFER_NATIVE_CUDA
                 auto normalized = tyloi::ops::rms_norm(
                     ::tyloi::Tensor(x.reshape({-1, model.config.hidden_size})), weight,
                     model.config.rms_norm_eps, 0.0);
                 return tyloi::ops::reshape(normalized, x.sizes()).dense();
-#else
-                auto normalized = qwen_rms_norm(x.reshape({-1, model.config.hidden_size})
-                                         .to(::tyloi::kFloat32),
-                                     weight, model.config.rms_norm_eps, 0.0);
-                return normalized.reshape(x.sizes());
-#endif
             }
             DenseTensor positions(DenseTensor explicit_positions, int64_t start, int64_t tokens) {
                 if (explicit_positions.defined())
-#ifdef TYLOINFER_NATIVE_CUDA
                     return tyloi::ops::contiguous(tyloi::ops::cast(
                         ::tyloi::Tensor(std::move(explicit_positions)),
                         tyloi::ScalarType::int64)).dense();
-#else
-                    return explicit_positions.to(::tyloi::kInt64).contiguous();
-#endif
                 // NoPE: positions only address the predictor's KV history.
-#ifdef TYLOINFER_NATIVE_CUDA
                 return tyloi::ops::arange(start, start + tokens,
                     tyloi::Device{tyloi::DeviceType::cuda, model.primary}).dense();
-#else
-                return ::tyloi::cuda::arange(start, start + tokens,
-                                                  ::tyloi::TensorOptions()
-                                                      .device(::tyloi::kCUDA)
-                                                      .dtype(::tyloi::kInt64));
-#endif
             }
             DenseTensor fuse(DenseTensor e, DenseTensor h) {
-#ifdef TYLOINFER_NATIVE_CUDA
                 auto joined = tyloi::ops::cat(std::array<::tyloi::Tensor, 2>{
                     ::tyloi::Tensor(std::move(e)), ::tyloi::Tensor(std::move(h))}, -1);
                 return tyloi::ops::project(joined, model.fusion).dense();
-#else
-                return model.executor->projector(mode.ffn).run(
-                    model.fusion, ::tyloi::cuda::cat({e, h}, -1));
-#endif
             }
             static DenseTensor lengths(int64_t batch, int64_t end, const DenseTensor &positions) {
-#ifdef TYLOINFER_NATIVE_CUDA
                 const std::array<int64_t, 1> shape{batch};
                 return tyloi::ops::full(shape, end, positions.device()).dense();
-#else
-                return ::tyloi::cuda::full({batch}, end, positions.options());
-#endif
             }
             // One predictor stage: every declared sub-block adds its own
             // pre-normed mixer branch to the same residual stream.
@@ -298,30 +223,15 @@ struct Mtp final : tyloi::models::Mtp {
                 std::optional<DenseTensor> sequence_lengths;
                 if (tokens == 1 && state.lengths[stage] > 0)
                     sequence_lengths = lengths(x.size(0), state.lengths[stage] + 1, pos);
-#ifdef TYLOINFER_NATIVE_CUDA
                 AttentionStep step{pos, sequence_lengths.value_or(::tyloi::DenseTensor()), ::tyloi::Tensor{},
                                    state.lengths[stage], 0, 0};
-#else
-                AttentionStep step{pos, sequence_lengths.value_or(::tyloi::DenseTensor()), mfq_nullopt,
-                                   state.lengths[stage], 0, 0};
-#endif
                 for (std::size_t index = 0; index < model.layers.size(); ++index)
-#ifdef TYLOINFER_NATIVE_CUDA
                     x = forward_layer(model.layers[index], state.states[index],
                                       std::move(x), step, 0, mode);
-#else
-                    x = forward_layer(model.layers[index], state.states[index], *model.executor,
-                                      index, std::move(x), step, 0, mode);
-#endif
                 return x;
             }
-#ifdef TYLOINFER_NATIVE_CUDA
         } ops{*this, state,
               tyloi::models::ForwardOptions{config.max_position_embeddings, nullptr, -1, primary}};
-#else
-        } ops{*this, state,
-              execution->executor().forward_mode(execution->config.layer_placement.primary_device())};
-#endif
         return tyloi::models::nemotron_h::mtp_predictor(ops, hidden, ids, supplied_positions, depth,
                                                      true);
     }
@@ -388,7 +298,6 @@ struct Mtp final : tyloi::models::Mtp {
         return result;
     }
 
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Validate a predictor snapshot and retain its staged transaction. */
     std::unique_ptr<tyloi::models::Restore> prepare_restore(
             tyloi::models::MtpState& value, const MtpSessionState& snapshot) const override {
@@ -503,33 +412,6 @@ struct Mtp final : tyloi::models::Mtp {
         };
         return std::make_unique<Candidate>(*this, state, snapshot);
     }
-#else
-    void restore_session_state(tyloi::models::MtpState& value,
-                               const MtpSessionState &snapshot) const override {
-        auto& state = this->state<PredictorState>(value);
-        std::vector<std::size_t> saved;
-        for (std::size_t index = 0; index < layers.size(); ++index)
-            if (std::holds_alternative<FullAttention>(layers[index].weights))
-                saved.push_back(index);
-        const auto *blocks = std::get_if<std::vector<KvSnapshot>>(&snapshot.payload);
-        const auto *hidden = snapshot.last_target_hidden.representation<::tyloi::DenseTensor>();
-        if (snapshot.cache_pos <= 0 || blocks == nullptr || blocks->size() != saved.size() ||
-            !hidden || !hidden->defined() || hidden->dim() != 3 ||
-            hidden->size(0) != 1 || hidden->size(1) != 1 || hidden->size(2) != config.hidden_size) {
-            throw std::runtime_error("Nemotron-H MTP session state is incompatible");
-        }
-        for (std::size_t index = 0; index < saved.size(); ++index) {
-            const auto layer_index = saved[index];
-            MfqCudaGuard guard(layers[layer_index].device);
-            const auto& attention = std::get<FullAttention>(layers[layer_index].weights);
-            restore_kv(std::get<tyloi::state::KvView>(state.states[layer_index]), (*blocks)[index],
-                attention.attention_head_dim,
-                attention.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16,
-                attention.kv_quantization);
-        }
-        state.lengths.front() = snapshot.cache_pos;
-    }
-#endif
 };
 
 } // namespace tyloi::cuda::nemotron_h

@@ -18,7 +18,6 @@ struct DenseOptions {
 
 } // namespace tyloi::cuda
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 
 tyloi::DenseTensor mlp(
@@ -45,4 +44,3 @@ std::optional<tyloi::DenseTensor> mlp_residual(
     bool recurrent);
 
 } // namespace tyloi::cuda::ops
-#endif

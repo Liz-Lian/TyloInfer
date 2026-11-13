@@ -2,9 +2,7 @@
 #include "float_projection.h"
 #include "qwen4_exp.h"
 #include "gated_residual_fused.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/context.h"
-#endif
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -958,7 +956,6 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
     const ::tyloi::DenseTensor& injection,const ::tyloi::DenseTensor& norm,
     const tyloi::NintTensor& down,const tyloi::NintTensor& up,const tyloi::NintTensor* inject,int64_t streams,double eps,bool after,
     const ::tyloi::DenseTensor& dense_injection,const ::tyloi::DenseTensor& prepared_injection_right,
-#ifdef TYLOINFER_NATIVE_CUDA
     ResidualTraceData* trace,const ::tyloi::DenseTensor& up_group_coefficients) {
     const auto mark = [&](ResidualTraceData::Phase phase) {
         if (!trace) return;
@@ -974,10 +971,6 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
         trace->sequence.at(trace->used++) = phase;
     };
 #define GR_MARK(phase) mark(ResidualTraceData::phase)
-#else
-    const std::function<void(const char*)>& marker,const ::tyloi::DenseTensor& up_group_coefficients) {
-#define GR_MARK(phase) do { if (marker) marker(#phase); } while (false)
-#endif
     TYLOINFER_RUNTIME_CHECK((inject!=nullptr)!=dense_injection.defined(),"exactly one residual injection weight is required");
     const auto matrix_valid=[](const tyloi::NintTensor& w) {return w.out>0 && w.neuron_len>0 && w.gs>0 && w.gs<=64 &&
         w.ng==(w.neuron_len+w.gs-1)/w.gs;};

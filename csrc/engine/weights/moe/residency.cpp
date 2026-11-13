@@ -1702,11 +1702,7 @@ void MoeResidencyManager::prepare_batched(std::int64_t bytes) {
     auto& s=*impl_;auto& cache=*s.cache;
     // cudaMallocAsync must be ordered with the copy kernels using its storage,
     // independently of a model stream that may still be executing its tail.
-#ifdef TYLOINFER_NATIVE_CUDA
     const MfqCudaStreamGuard stream_guard(MfqCudaStream(mfq_current_cuda_device(),s.stream));
-#else
-    const MfqCudaStreamGuard stream_guard(at::cuda::getStreamFromExternal(s.stream,mfq_current_cuda_device()));
-#endif
     struct Field {const uint8_t* host;uint8_t* gpu;int64_t bytes,backup_offset,upload_offset;const uint8_t* cached;};
     struct Interval {const uint8_t* host;int64_t bytes,offset;};
     std::vector<Field> fields;

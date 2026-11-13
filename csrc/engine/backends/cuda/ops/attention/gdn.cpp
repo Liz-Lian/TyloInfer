@@ -1,6 +1,5 @@
 #include "engine/ops/gdn.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/attention/gdn_core.h"
 #include "engine/backends/cuda/executor/executor.h"
 
@@ -192,4 +191,3 @@ Tensor Gdn::forward_chunk(State& state, const Tensor& input, bool cache, std::ve
     return result;
 }
 } // namespace tyloi::ops
-#endif

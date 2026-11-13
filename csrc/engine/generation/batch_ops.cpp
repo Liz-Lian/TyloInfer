@@ -1,6 +1,5 @@
 #include "engine/generation/batch_ops.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "components/error.h"
 #include "engine/budget.h"
 #include "engine/config.h"
@@ -408,4 +407,3 @@ std::unique_ptr<Batch> make_batch(models::CausalModel& model, models::State* ser
         config.continuous_batch.packed_tokens);
 }
 } // namespace tyloi::engine
-#endif

@@ -2,7 +2,6 @@
 
 #include "backend.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/tensor.h"
 #include "engine/ops.h"
 namespace tyloi::cuda::ops {
@@ -17,25 +16,16 @@ tyloi::DenseTensor merge_norms(tyloi::DenseTensor dense, tyloi::DenseTensor expe
     const tyloi::DenseTensor& dense_weight, const tyloi::DenseTensor& expert_weight,
     const tyloi::DenseTensor& output_weight, const tyloi::DenseTensor& scale, double eps);
 }
-#endif
 
 ::tyloi::DenseTensor qwen_rms_norm(
     ::tyloi::DenseTensor x,
-#ifdef TYLOINFER_NATIVE_CUDA
     const ::tyloi::Tensor& weight,
-#else
-    ::tyloi::DenseTensor weight,
-#endif
     double eps,
     double weight_offset);
 
 ::tyloi::DenseTensor qwen_rms_norm_bf16(
     bool fused,
     ::tyloi::DenseTensor x,
-#ifdef TYLOINFER_NATIVE_CUDA
     const ::tyloi::Tensor& weight,
-#else
-    ::tyloi::DenseTensor weight,
-#endif
     double eps,
     double weight_offset);

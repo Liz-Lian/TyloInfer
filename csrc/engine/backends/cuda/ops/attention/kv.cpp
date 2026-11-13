@@ -2,9 +2,7 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
-#endif
 
 #include <optional>
 #include <utility>
@@ -13,7 +11,6 @@ using ::tyloi::indexing::Slice;
 
 namespace tyloi::cuda {
 
-#ifdef TYLOINFER_NATIVE_CUDA
 std::pair<tyloi::DenseTensor, tyloi::DenseTensor> ops::append_kv(
         tyloi::state::KvView cache, tyloi::DenseTensor key, tyloi::DenseTensor value,
         tyloi::DenseTensor positions, int64_t start_pos, bool contiguous_prefill_prefix) {
@@ -26,18 +23,6 @@ std::pair<tyloi::DenseTensor, tyloi::DenseTensor> ops::append_kv(
     const auto k_chunk_ptrs = dense_kv_buffer(cache.key_chunk_ptrs);
     const auto v_chunk_ptrs = dense_kv_buffer(cache.value_chunk_ptrs);
     const auto page_table = dense_kv_buffer(cache.page_table);
-#else
-std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
-        tyloi::state::KvView cache, bool aten_write,
-        ::tyloi::DenseTensor kk, ::tyloi::DenseTensor vv,
-        ::tyloi::DenseTensor pos, int64_t start_pos, int64_t end_pos,
-        bool contiguous_prefill_prefix) {
-    auto& k = cache.physical_key;
-    auto& v = cache.physical_value;
-    const auto& k_chunk_ptrs = cache.key_chunk_ptrs;
-    const auto& v_chunk_ptrs = cache.value_chunk_ptrs;
-    const auto& page_table = cache.page_table;
-#endif
     const auto& quantization = cache.quantization;
     const auto ring = cache.ring;
     const auto paged_batch = cache.batch;
@@ -95,9 +80,6 @@ std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
          (pos.dim() == 2 && pos.size(0) == kh.size(0) &&
           pos.size(1) == kh.size(2))),
         "KV cache write requires positions [T] or [B,T]");
-#ifndef TYLOINFER_NATIVE_CUDA
-    aten_write = k.scalar_type() != ::tyloi::kFloat16 || aten_write;
-#endif
     if (k.is_cuda() && !aten_write && !ring) {
         auto out = kv_cache_write_cuda(k, v, kh, vh, pos);
         (void)out;

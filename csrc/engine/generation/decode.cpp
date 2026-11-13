@@ -1,6 +1,5 @@
 #include "engine/generation/decode.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
 #include "engine/weights/cache.h"
 
@@ -150,4 +149,3 @@ void Decode::invalidate() {
     static_next = {}; valid_ = false;
 }
 } // namespace tyloi::engine
-#endif

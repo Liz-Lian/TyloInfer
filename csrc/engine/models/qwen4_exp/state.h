@@ -5,9 +5,7 @@
 #include "engine/models/session/size.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 #include "engine/models/qwen4_exp/layer.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/state/media.h"
-#endif
 
 #include <memory>
 #include <vector>
@@ -20,16 +18,8 @@ struct Model;
 
 // Per-request recurrent and attention storage for one shared layer.
 struct LayerState {
-#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::Gdn::State gdn;
-#else
-    Gdn::State gdn;
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<tyloi::ops::Qsa::State> qsa;
-#else
-    std::unique_ptr<Qsa::State> qsa;
-#endif
     Ple::State ple;
     bool retain_graph_storage = false, retained_prefix = false;
 
@@ -43,12 +33,6 @@ struct LayerState {
 /** Capture the committed layer caches and recurrent payloads. */
 tyloi::models::qwen4_exp::LayerSnapshot capture_layer_session(
     const Layer& layer, const LayerState& state, std::int64_t position, std::size_t& bytes);
-#ifndef TYLOINFER_NATIVE_CUDA
-/** Restore a layer snapshot through the legacy Torch execution path. */
-void restore_layer_session(
-    const Layer& layer, LayerState& state,
-    const tyloi::models::qwen4_exp::LayerSnapshot& snapshot, std::int64_t position);
-#else
 /** Validate a layer snapshot against its model and current request layout. */
 void validate_layer_session(const Layer& layer, const LayerState& current,
     const tyloi::models::qwen4_exp::LayerSnapshot& snapshot, std::int64_t position);
@@ -58,7 +42,6 @@ std::size_t layer_restore_growth(const Layer& layer, const LayerState& current,
 /** Copy a validated snapshot into an already-owned independent layer candidate. */
 void stage_layer_session(const Layer& layer, LayerState& candidate,
     const tyloi::models::qwen4_exp::LayerSnapshot& snapshot, std::int64_t position);
-#endif
 
 // One request owns its layer caches, decode graph, positions and journal.
 class State : public tyloi::models::State {
@@ -75,15 +58,12 @@ public:
 
     void preallocate() override {}
     void reset(std::int64_t batch) override;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Restore and retire graph references after the runtime finishes exchanges. */
     void release_graphs() override;
     /** Report request-owned cache and graph telemetry. */
     std::optional<tyloi::engine::Metrics> metrics() const override;
     /** Return the measured phases of this request's decode graphs. */
     std::vector<tyloi::models::DecodeProfile> decode_profile() const override;
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Plan per-device cache and checkpoint allocations for a forward window. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
         std::int64_t batch, std::int64_t tokens, const tyloi::models::ForwardOptions& options,
@@ -92,7 +72,6 @@ public:
     std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t batch) const override;
     /** Plan recurrent and PLE checkpoints before beginning a suffix. */
     std::vector<std::pair<tyloi::Device, std::size_t>> suffix_growth(std::int64_t tokens) const override;
-#endif
     std::int64_t position() const noexcept override { return cache_pos; }
     /** Report whether a speculative transaction is open. */
     bool speculating() const override { return speculative_start >= 0; }
@@ -112,15 +91,10 @@ public:
     TextSessionStateKind text_session_state_kind() const;
     /** Capture a text session snapshot for the committed tokens. */
     TextSessionState capture_text_session_state(const std::vector<std::int64_t>& tokens) const override;
-#ifndef TYLOINFER_NATIVE_CUDA
-    /** Restore a compatible text session snapshot. */
-    void restore_text_session_state(const TextSessionState& state) override;
-#else
     /** Validate and prepare an independent staged session restore. */
     std::unique_ptr<tyloi::models::Restore> prepare_restore(const TextSessionState& state) override;
     /** Retire graph references before replacing request-owned layer storage. */
     void retire_graphs() noexcept;
-#endif
 
     // Speculative suffix journal; the layer records hold the checkpoints.
     /** Begin journaling an uncommitted speculative suffix. */
@@ -139,19 +113,13 @@ public:
     std::int64_t speculative_start = -1;
     std::int64_t speculative_confirmed = 0;
     bool speculative_suffix_forward = false;
-#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor positions;
     /** Request-owned prepared media cache. */
     tyloi::cache::Media images;
-#else
-    ::tyloi::DenseTensor positions;
-#endif
     std::vector<std::unique_ptr<LayerState>> layers;
     std::unique_ptr<Qwen4DecodeGraph> graph_registry;
-#ifdef TYLOINFER_NATIVE_CUDA
     /** Mark synthetic startup capture for this request only. */
     bool warming = false;
-#endif
     bool reuse_decode_graphs = false;
     std::uint64_t decode_graph_captures = 0;
     std::int64_t decode_reserve_until = 0;

@@ -1,6 +1,5 @@
 #include "engine/backends/cuda/ops/tensor.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -378,4 +377,3 @@ void index_fill(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor i
 }
 
 } // namespace tyloi::cuda::ops
-#endif

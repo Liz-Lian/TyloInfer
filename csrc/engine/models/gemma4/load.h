@@ -27,9 +27,5 @@ void load(Model&, const tyloi::weights::Loader&, LayerPlacementConfig&, int gpu_
 /** Load the weights and configuration of one Gemma4 layer. */
 void load_layer(Layer&, const tyloi::weights::Loader&, const tyloi::models::gemma4::Config&,
                 int index, const std::string& type);
-#ifndef TYLOINFER_NATIVE_CUDA
-Layer load_layer(const tyloi::weights::Loader&, const tyloi::models::gemma4::Config&,
-                 int index, const std::string& type);
-#endif
 
 } // namespace tyloi::cuda::gemma4

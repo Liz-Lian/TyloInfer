@@ -753,10 +753,8 @@ public:
                << " pipeline_cpu_calibration_observations=" << pipeline_cpu_calibration_.observations()
                << " pipeline_cpu_calibration_ns=" << uint64_t(pipeline_cpu_calibration_.work_ns())
                << " expert_disk_reads_after_preload=" << expert_disk_reads_after_preload()
-#ifdef TYLOINFER_NATIVE_CUDA
                << " tensor_host_bytes=" << tyloi::cuda::tensor_host_bytes.load()
                << " tensor_host_peak_bytes=" << tyloi::cuda::tensor_host_peak_bytes.load()
-#endif
                << " gpu_demote_bytes=" << stats_.gpu_demote_bytes
                << " host_bytes=" << host_bytes_
                << " demand_hits=" << stats_.demand_hits
@@ -1192,9 +1190,7 @@ public:
               {"small_window_hot_groups_3",double(stats_.pipeline_small_window_hot_groups[3])},
               {"small_window_hot_groups_4",double(stats_.pipeline_small_window_hot_groups[4])},
               {"prefill_cpu_copy_join_ms",double(stats_.pipeline_prefill_cpu_copy_join_ns)/1e6},
-#ifdef TYLOINFER_NATIVE_CUDA
             {"host_tensor_allocated_bytes",double(tyloi::cuda::tensor_host_bytes.load())},
-#endif
             {"ram_expert_pcie_read_bytes", double(stats_.ram_pcie_bytes)}};
         append_expert_format_metrics(result);
         return result;

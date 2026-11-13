@@ -12,9 +12,7 @@ namespace tyloi::cuda::minicpmo45 {
 
 State::State(const Model& model)
     : layers(model.layers.size())
-#ifdef TYLOINFER_NATIVE_CUDA
     , model_(&model)
-#endif
     , maximum_(model.metadata.max_position_embeddings)
 {
     for (const auto& layer : model.layers)
@@ -105,11 +103,7 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
     const auto& saved = std::get<std::vector<KvSnapshot>>(state.payload);
     for (size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
-#ifdef TYLOINFER_NATIVE_CUDA
         stage_kv(restore.layers[index], saved[index], layout_[index].head_dim, ::tyloi::kFloat16, {});
-#else
-        restore_kv(restore.layers[index], saved[index], layout_[index].head_dim, ::tyloi::kFloat16, {});
-#endif
     }
 }
 
@@ -120,7 +114,6 @@ void State::publish(Restore&& restore) noexcept {
     batch = 1;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 void add_growth(std::vector<std::pair<Device,std::size_t>>& values,Device device,std::size_t bytes) {
     if (!device.is_cuda() || !bytes) return;
@@ -165,6 +158,5 @@ std::unique_ptr<tyloi::models::Restore> State::prepare_restore(const TextSession
     };
     return std::make_unique<Candidate>(*this,snapshot);
 }
-#endif
 
 } // namespace tyloi::cuda::minicpmo45
