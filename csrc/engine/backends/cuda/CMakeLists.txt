@@ -351,9 +351,6 @@ target_compile_definitions(mfq-cuda-execution PRIVATE NOMINMAX)
 set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set_source_files_properties(
-    # Match the Python JIT arithmetic for shared normalization and Gemma fusions.
-    ${TYLOINFER_CUDA_KERNEL_ROOT}/acc.cu
-    ${TYLOINFER_CUDA_KERNEL_ROOT}/norm.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/attention_mma.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/deepseek_v4_attention.cu
     PROPERTIES COMPILE_OPTIONS "--use_fast_math;--extended-lambda"

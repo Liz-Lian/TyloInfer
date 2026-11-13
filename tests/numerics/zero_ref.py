@@ -73,7 +73,7 @@ def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
             or source.get('generator') != 'tests/numerics/zero_ref.py'
             or case.data.get('actual_role') != 'candidate'):
         raise ValueError('Unsupported NINT8-0 candidate case')
-    from tyloinfer.kernels.cuda import nint8_zero_matmul as implementation
+    from . import zero_cuda as implementation
     from tyloinfer.kernels.cuda._ext import ext
 
     modules, identity = open_source(source_root)

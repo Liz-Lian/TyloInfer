@@ -20,8 +20,6 @@ tyloi::ScalarType scalar(const std::string& name) {
         return tyloi::kFloat16;
     if (name == "bfloat16")
         return tyloi::kBFloat16;
-    if (name == "int8")
-        return tyloi::kInt8;
     if (name == "uint8")
         return tyloi::kUInt8;
     if (name == "int32")

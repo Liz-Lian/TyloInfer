@@ -289,7 +289,7 @@ def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
         or config['gs'] != tensor.spec.groupsize
     ):
         raise ValueError('NEPQ runtime geometry differs from the source profile')
-    from tyloinfer.kernels.cuda import nepq_matmul as adapter
+    from . import nepq_cuda as adapter
     from tyloinfer.kernels.cuda._ext import ext
 
     device = resolve_device(device)

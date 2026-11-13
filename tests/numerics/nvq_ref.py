@@ -320,7 +320,7 @@ def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
     """Execute local packed NVQ backward and wrapper autograd on fixed inputs."""
     if case.data.get('actual_role') != 'candidate':
         raise ValueError('NVQ candidate requires the candidate result role')
-    from tyloinfer.kernels.cuda import nvq_matmul as implementation
+    from . import nvq_cuda as implementation
     from tyloinfer.kernels.cuda._ext import ext
 
     _, identity, tensor, runtime, _ = _verified(case, source_root)

@@ -73,7 +73,7 @@ def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
             or case.data['source'].get('generator') != 'tests/numerics/nint_ref.py'
             or case.data.get('actual_role') != 'candidate'):
         raise ValueError('Unsupported NINT candidate case')
-    from tyloinfer.kernels.cuda import nint_matmul as implementation
+    from . import nint_cuda as implementation
     from tyloinfer.kernels.cuda._ext import ext
 
     modules, identity = open_source(source_root)
