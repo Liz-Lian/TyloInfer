@@ -469,9 +469,7 @@ function Build-NativeSidecar {
         [Parameter(Mandatory)][int] $ParallelJobs
     )
 
-    # mfq-runtime uses the native tensor backend and must remain independent of
-    # Python and LibTorch. Explicitly disable the optional A/B reference target
-    # so a reused CMake cache cannot pull those dependencies back into a release.
+    # Select the native CUDA products explicitly, including on a fresh build tree.
     $nativeFlags = @(Get-ReleaseNativeFlags $Context)
     $cudaFlags = ($nativeFlags | ForEach-Object { "--compiler-options=$_" }) -join ' '
     Invoke-Checked $Context.Tools.CMake @(
@@ -485,10 +483,13 @@ function Build-NativeSidecar {
         "-DCMAKE_CUDA_COMPILER=$([System.IO.Path]::Combine($Context.CudaRoot, 'bin', 'nvcc.exe'))",
         "-DCMAKE_CUDA_ARCHITECTURES=$Architectures",
         "-DTYLOINFER_CUDA_ARCHITECTURES=$Architectures",
+        "-DBUILD_TESTING=OFF",
+        "-DTYLOINFER_BUILD_CUDA_ENGINE=ON",
+        "-DTYLOINFER_BUILD_HIP_RUNTIME=OFF",
+        "-DTYLOINFER_BUILD_CLI_TOOLS=ON",
         "-DTYLOINFER_BUILD_TRANSPORT=ON",
         "-DTYLOINFER_BUILD_METAL_RUNTIME=OFF",
-        "-DTYLOINFER_ENABLE_MFQ_COMPAT=$(if ($env:TYLOINFER_ENABLE_MFQ_COMPAT) { $env:TYLOINFER_ENABLE_MFQ_COMPAT } else { 'OFF' })",
-        "-DTYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME=OFF"
+        "-DTYLOINFER_ENABLE_MFQ_COMPAT=$(if ($env:TYLOINFER_ENABLE_MFQ_COMPAT) { $env:TYLOINFER_ENABLE_MFQ_COMPAT } else { 'OFF' })"
     )
     Invoke-Checked $Context.Tools.CMake @(
         "--build", $Context.NativeBuildDirectory,
