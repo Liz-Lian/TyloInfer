@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,6 +17,9 @@
 ::tyloi::DenseTensor rope_cuda(::tyloi::DenseTensor, ::tyloi::DenseTensor, double);
 ::tyloi::DenseTensor rope_ext_cuda(::tyloi::DenseTensor, ::tyloi::DenseTensor, double, std::int64_t,
                                    ::tyloi::DenseTensor);
+// Native signed Hadamard entry points are implemented by ops/projection/nepq_wrappers.cpp.
+::tyloi::DenseTensor nepq_hadamard_input_cuda(::tyloi::DenseTensor, ::tyloi::DenseTensor, std::int64_t);
+::tyloi::DenseTensor nepq_hadamard_adjoint_cuda(::tyloi::DenseTensor, ::tyloi::DenseTensor, std::int64_t);
 
 namespace tyloi::diagnostics::numerics {
 namespace {
@@ -68,11 +72,12 @@ tyloi::DenseTensor rope(TensorWork& work, const Json& config, Json& details) {
 }
 } // namespace
 
+/** Execute a supported basic CUDA operation from fixed inputs, or decline the case. */
 bool run_basic(Case& value) {
     const auto& data = value.data();
     const auto op = data.at("op").get<std::string>();
     if (op != "rms_norm" && op != "l2_norm" && op != "acc" && op != "silu_mul" && op != "rope" &&
-        op != "ssm_conv_silu" && op != "gelu_mul")
+        op != "ssm_conv_silu" && op != "gelu_mul" && op != "nepq_hadamard")
         return false;
     TensorWork work(value);
     const auto& config = data.at("config");
@@ -92,6 +97,17 @@ bool run_basic(Case& value) {
         auto gate = work.input("gate");
         auto up = work.input("up");
         output = work.keep(op == "silu_mul" ? silu_mul_cuda(gate, up) : gelu_mul_cuda(gate, up));
+    } else if (op == "nepq_hadamard") {
+        const auto direction = config.at("direction").get<std::string>();
+        if (direction != "input" && direction != "adjoint")
+            throw std::invalid_argument("unsupported NEPQ Hadamard direction: " + direction);
+        auto input = work.input("input");
+        auto signs = work.input("signs");
+        const auto block = config.at("block_size").get<std::int64_t>();
+        output = work.keep(direction == "input"
+            ? nepq_hadamard_input_cuda(input, signs, block)
+            : nepq_hadamard_adjoint_cuda(input, signs, block));
+        details["direction"] = direction;
     } else if (op == "ssm_conv_silu") {
         auto input = work.input("conv_input");
         auto weight = work.input("weight");

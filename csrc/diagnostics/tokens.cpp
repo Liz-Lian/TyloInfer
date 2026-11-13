@@ -220,13 +220,15 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     const auto* profile_option=env_lookup("TYLOINFER_PROFILE_CUDA_GRAPH");
     const bool profile_graph=profile && profile_option && std::atoi(profile_option)!=0;
     const auto& config=program.config();
-    const bool graph_requested=!forced_input && plan.backbone!=models::Backbone::generic_qwen && !flash &&
-        (!graph_option || graph_option[0]!='0') && mfq_cuda_graph_capture_supported() &&
+    const bool graph_requested=!graph_option || graph_option[0]!='0';
+    const bool graph_eligible=graph_requested && !forced_input && plan.backbone!=models::Backbone::generic_qwen && !flash &&
+        mfq_cuda_graph_capture_supported() &&
         config.dsv4_cpu_offload_layers.empty() && config.dense_cpu_layer_count==0 &&
         program.weights().transfer()!=weights::Cache::Transfer::coordinated &&
-        model_parallel_cuda_graph_enabled(config,program.executor(),program.weights()) &&
+        info.graph==models::GraphOwner::executor &&
+        ::tyloi::cuda::internal::graph_allowed(config,program.executor(),program.weights(),info) &&
         (!profile || profile_graph) && gen>1;
-    if(graph_requested && !eos)work.graph=program.executor().graph();
+    if(graph_requested && graph_eligible && !eos)work.graph=program.executor().graph();
     const bool use_graph=bool(work.graph);
     const auto* range_option=env_lookup("TYLOINFER_CUDA_PROFILER_RANGE");
     const bool range=range_option && std::atoi(range_option)!=0;
@@ -293,6 +295,8 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
             if(gen>256 && i==gen-1-128 && flash && stops.empty()) { TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream())); last_window=Clock::now(); measured_last=true; }
         }
     }
+    std::cout<<"diagnostic_cuda_graph requested="<<int(graph_requested)
+        <<" eligible="<<int(graph_eligible)<<" used="<<int(use_graph)<<'\n';
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream()));
     if(range) { TYLOINFER_CUDA_CHECK(cudaProfilerStop()); stop_profiler.active=false; }
     const auto t3=Clock::now();

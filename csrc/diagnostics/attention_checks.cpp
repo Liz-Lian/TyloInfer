@@ -15,6 +15,7 @@
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -67,6 +68,42 @@ private:
     std::vector<tyloi::DenseTensor> latest_group_;
     bool finished_ = false;
 };
+
+/** Round finite clamped values to E4M3FN on the CPU and return F32 on the input device. */
+tyloi::DenseTensor reference_e4m3(const tyloi::DenseTensor& input, Work& work) {
+    static const auto values = [] {
+        std::array<float, 127> table{};
+        for (int code = 0; code < 127; ++code) {
+            const int exponent = code >> 3, mantissa = code & 7;
+            table[code] = exponent == 0
+                ? std::ldexp(static_cast<float>(mantissa), -9)
+                : std::ldexp(1.0f + static_cast<float>(mantissa) / 8.0f, exponent - 7);
+        }
+        return table;
+    }();
+    auto host = input.to(tyloi::kCPU).contiguous().clone();
+    work.keep(host);
+    auto* data = host.data_ptr<float>();
+    for (int64_t i = 0; i < host.numel(); ++i) {
+        const float value = data[i];
+        const float magnitude = std::abs(value);
+        if (!std::isfinite(value) || magnitude > 448.0f)
+            throw std::runtime_error("E4M3FN reference requires finite values clamped to 448");
+        auto upper = std::lower_bound(values.begin(), values.end(), magnitude);
+        if (upper == values.end()) upper = values.end() - 1;
+        auto selected = upper;
+        if (upper != values.begin()) {
+            const auto lower = upper - 1;
+            const float below = magnitude - *lower, above = *upper - magnitude;
+            if (below < above || (below == above && ((lower - values.begin()) & 1) == 0))
+                selected = lower;
+        }
+        data[i] = std::copysign(*selected, value);
+    }
+    auto result = host.to(input.device());
+    work.keep(result);
+    return result;
+}
 }
 
 int run_attention_decode_check(tyloi::cuda::Program& program, int length, int reps, int D, bool sliding, int window) {
@@ -945,10 +982,9 @@ int run_dsv4_attention_check(tyloi::cuda::Program& program, int reps) {
             .reshape({-1, (D - RD) / 64, 64});
         auto fp8_scale = ref_nope.abs().amax(-1, true)
             .clamp_min(1e-4) / 448.0;
-        ref_nope = (ref_nope / fp8_scale)
-            .clamp(-448.0, 448.0)
-            .to(mfq_float8_e4m3fn)
-            .to(tyloi::kFloat32) * fp8_scale;
+        auto normalized = (ref_nope / fp8_scale).clamp(-448.0, 448.0);
+        work.keep(normalized);
+        ref_nope = reference_e4m3(normalized, work) * fp8_scale;
         ref.slice(-1, 0, D - RD).copy_(
             ref_nope.reshape({B, W, D - RD}));
         ref = ref.to(tyloi::kBFloat16)

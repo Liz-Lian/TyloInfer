@@ -99,6 +99,8 @@ private:
 };
 
 namespace internal {
+/** Check the existing runtime eligibility for CUDA decode graph execution. */
+bool graph_allowed(const CudaLoadConfig&, Executor&, const weights::Cache&, const models::Info&);
 /** Apply the owner's runtime options and actual graph eligibility to generation. */
 void configure_generation(engine::Config&, const CudaLoadConfig&, Executor&,
     const weights::Cache&, const models::Info&);

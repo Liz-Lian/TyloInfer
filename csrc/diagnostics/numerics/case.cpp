@@ -72,7 +72,7 @@ std::filesystem::path blob_path(const std::filesystem::path& root, const Json& s
     return path;
 }
 std::size_t element_bytes(const std::string& dtype) {
-    if (dtype == "uint8" || dtype == "bool")
+    if (dtype == "int8" || dtype == "uint8" || dtype == "bool")
         return 1;
     if (dtype == "float16")
         return 2;
@@ -85,6 +85,8 @@ std::size_t element_bytes(const std::string& dtype) {
 std::string encoding(const std::string& dtype) {
     if (dtype == "bool")
         return "|b1";
+    if (dtype == "int8")
+        return "|i1";
     if (dtype == "uint8")
         return "|u1";
     if (dtype == "int32")

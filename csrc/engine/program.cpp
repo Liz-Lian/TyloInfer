@@ -97,6 +97,15 @@ Assembly assembly(const CudaLoadOptions& options, CudaLoadConfig& config,
 } // namespace
 
 namespace internal {
+bool graph_allowed(const CudaLoadConfig& load, Executor& executor,
+        const weights::Cache& weights, const models::Info& info) {
+    const auto graph_weights = info.graph_weights == models::GraphWeights::resident
+        ? ::tyloi::weights::Cache::Graph::legacy : ::tyloi::weights::Cache::Graph::native;
+    return info.decode_graph && !executor.attention_options().kernels.decode_aten &&
+        model_parallel_cuda_graph_enabled(load, executor, weights) &&
+        weights.graph_safe(graph_weights, moe_parallel_config(load).enabled());
+}
+
 void configure_generation(engine::Config& runtime, const CudaLoadConfig& load,
         Executor& executor, const weights::Cache& weights, const models::Info& info) {
     runtime.profile_decode = load.profile_decode;
@@ -106,13 +115,9 @@ void configure_generation(engine::Config& runtime, const CudaLoadConfig& load,
     runtime.devices = cuda_devices(load);
     runtime.online_budget = load.layer_placement.devices.size() <= 1 &&
         !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
-    const auto graph_weights = info.graph_weights == models::GraphWeights::resident
-        ? ::tyloi::weights::Cache::Graph::legacy : ::tyloi::weights::Cache::Graph::native;
-    const bool graph_allowed = info.decode_graph && !executor.attention_options().kernels.decode_aten &&
-        model_parallel_cuda_graph_enabled(load, executor, weights) &&
-        weights.graph_safe(graph_weights, moe_parallel_config(load).enabled());
-    runtime.decode_graph.enabled &= graph_allowed;
-    runtime.continuous_batch.cuda_graph &= graph_allowed;
+    const bool allowed = graph_allowed(load, executor, weights, info);
+    runtime.decode_graph.enabled &= allowed;
+    runtime.continuous_batch.cuda_graph &= allowed;
 }
 
 void configure_model_kv(Executor& executor, std::shared_ptr<KvMemoryManager>& kv,
