@@ -21,8 +21,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <exception>
-#include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -41,14 +39,13 @@ using Clock = std::chrono::steady_clock;
 struct Work {
     Program& program;
     std::vector<Tensor> values;
-    tyloi::ops::Trace trace;
     ~Work() noexcept {
         try { program.drain(); }
         catch (const std::exception& e) { std::cerr << "prefill_cleanup error=" << e.what() << '\n'; }
         catch (...) { std::cerr << "prefill_cleanup error=unknown\n"; }
     }
     Tensor keep(Tensor value) { values.push_back(value); return value; }
-    void clear() { program.drain(); values.clear(); trace.clear(); }
+    void clear() { program.drain(); values.clear(); }
 };
 
 /** Compute the original last-token capped logits from normalized hidden rows. */
@@ -58,63 +55,17 @@ Tensor project(Work& work, Tensor hidden) {
 }
 
 /** Run one ordinary forward and retain its inputs and results. */
-Tensor forward(Work& work, const Tensor& ids, tyloi::ops::Trace* trace=nullptr) {
+Tensor forward(Work& work, const Tensor& ids) {
     auto& program=work.program;
     auto mode=program.executor().forward_mode(program.config().layer_placement.primary_device());
     tyloi::models::Input input; input.ids=ids; input.advance=true;
     return work.keep(program.model().forward(std::move(input),program.state(),
-        {mode.kv_capacity,trace?trace:mode.trace,trace?0:mode.trace_layer,mode.primary}));
+        {mode.kv_capacity,mode.trace,mode.trace_layer,mode.primary}));
 }
 
 /** Synchronize the primary stream at the original timing boundary. */
 void sync() {
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(tyloi::cuda::current_stream()));
-}
-
-/** Name the exact scalar encoding used by a contiguous native observation. */
-const char* dtype(tyloi::ScalarType type) {
-    switch(type) {
-        case tyloi::ScalarType::boolean: return "bool";
-        case tyloi::ScalarType::uint8: return "uint8";
-        case tyloi::ScalarType::int8: return "int8";
-        case tyloi::ScalarType::int16: return "int16";
-        case tyloi::ScalarType::int32: return "int32";
-        case tyloi::ScalarType::int64: return "int64";
-        case tyloi::ScalarType::float16: return "float16";
-        case tyloi::ScalarType::bfloat16: return "bfloat16";
-        case tyloi::ScalarType::float32: return "float32";
-        case tyloi::ScalarType::float64: return "float64";
-        default: throw std::runtime_error("unsupported prefill trace dtype");
-    }
-}
-
-/** Export one final-chunk observation set without replacing any existing result. */
-void write_trace(Work& work, const std::filesystem::path& root,
-        std::int64_t tokens, std::int64_t chunk, int repeat) {
-    std::filesystem::create_directories(root.parent_path());
-    if(!std::filesystem::create_directory(root))
-        throw std::runtime_error("prefill trace directory already exists: "+root.string());
-    nlohmann::json metadata={{"format","tyloinfer.prefill-trace.v1"},{"tokens",tokens},
-        {"chunk",chunk},{"repeat",repeat},{"layer",0},{"stages",nlohmann::json::array()}};
-    for(const auto& [name,tensor]:work.trace) {
-        auto host=work.keep(tensor.dense().contiguous().to(tyloi::kCPU));
-        work.program.drain();
-        const auto value=host.dense();
-        const auto file=std::to_string(metadata["stages"].size())+".bin";
-        std::ofstream output(root/file,std::ios::binary);
-        if(!output)throw std::runtime_error("cannot create prefill trace tensor: "+file);
-        output.write(static_cast<const char*>(value.data_ptr()),
-            static_cast<std::streamsize>(value.nbytes()));
-        output.close();
-        if(!output)throw std::runtime_error("cannot write prefill trace tensor: "+file);
-        metadata["stages"].push_back({{"name",name},{"file",file},{"dtype",dtype(value.scalar_type())},
-            {"shape",value.sizes().vec()},{"nbytes",value.nbytes()}});
-    }
-    std::ofstream output(root/"trace.json");
-    output<<metadata.dump(2)<<'\n';
-    output.close();
-    if(!output)throw std::runtime_error("cannot write prefill trace metadata: "+root.string());
-    std::cout<<"prefill_trace path="<<root.string()<<" stages="<<work.trace.size()<<std::endl;
 }
 
 /** Read and validate every logit before deriving the first maximum. */
@@ -185,10 +136,6 @@ int tyloi::cuda::diagnostics::run_prefill_sweep(Program& program,const std::vect
     profiler.enabled=profile;
     auto ids=work.keep(tyloi::ops::reshape(work.keep(tyloi::ops::tensor(tokens,program.executor().device())),{1,maximum}));
     const char* chunks_option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_SWEEP_CHUNKS");
-    const auto* trace_option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_TRACE");
-    const std::string trace_root=trace_option?trace_option:"";
-    if(!trace_root.empty() && (!chunks_option || !chunks_option[0]))
-        throw std::invalid_argument("prefill trace requires explicit chunk sizes");
     reject_retired();
     if(chunks_option && chunks_option[0]) {
         if(auto p=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_LAYER_FLUSH_SWEEP");p && std::atoi(p)!=0)
@@ -216,8 +163,6 @@ int tyloi::cuda::diagnostics::run_prefill_sweep(Program& program,const std::vect
         const bool layer_major_requested=layer_major_option && std::atoi(layer_major_option)!=0;
         const auto* kernel_sweep_option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_KERNEL_SWEEP");
         const bool kernel_sweep=kernel_sweep_option && std::atoi(kernel_sweep_option)!=0;
-        if(!trace_root.empty() && (variant_sweep || layer_major_sweep || layer_major_requested || kernel_sweep))
-            throw std::invalid_argument("prefill trace requires an ordinary chunk sweep");
         const bool gr_gdn_sweep=kernel_sweep && std::atoi(kernel_sweep_option)==2;
         const bool exact_sweep=kernel_sweep && std::atoi(kernel_sweep_option)>=3;
         const bool exact_pair_sweep=kernel_sweep && std::atoi(kernel_sweep_option)>=4;
@@ -332,16 +277,8 @@ int tyloi::cuda::diagnostics::run_prefill_sweep(Program& program,const std::vect
                     profiler.enabled=profile && offset==0;
                     const auto count=std::min(chunk,m-offset);
                     auto part=work.keep(ids.dense().narrow(1,offset,count));
-                    const bool last=offset+count==m;
-                    auto hidden=forward(work,part,!trace_root.empty() && last?&work.trace:nullptr);
-                    if(last) {
-                        logits=project(work,hidden);
-                        if(!trace_root.empty()) {
-                            work.trace.emplace_back("ids",work.keep(ids.dense().narrow(1,0,m).contiguous()));
-                            work.trace.emplace_back("final_norm",work.keep(hidden.dense().narrow(1,count-1,1).contiguous()));
-                            work.trace.emplace_back("logits",logits);
-                        }
-                    }
+                    auto hidden=forward(work,part);
+                    if(offset+count==m)logits=project(work,hidden);
                     sync();
                     if(profiler.enabled) { profiler.report("prefill_m="+std::to_string(m)+" chunk="+std::to_string(chunk)+" repeat="+std::to_string(repeat)); profiler.reset(); }
                     std::cout<<"prefill_progress_m="<<m<<" chunk="<<chunk<<" repeat="<<repeat<<" completed="<<offset+count
@@ -350,8 +287,6 @@ int tyloi::cuda::diagnostics::run_prefill_sweep(Program& program,const std::vect
                 profiler.enabled=false;
                 const auto ms=std::chrono::duration<double,std::milli>(Clock::now()-started).count();
                 const auto actual=checked(logits);
-                if(!trace_root.empty())write_trace(work,std::filesystem::path(trace_root)/
-                    ("m"+std::to_string(m))/("chunk"+std::to_string(chunk))/("repeat"+std::to_string(repeat)),m,chunk,repeat);
                 if(layer_major_sweep || chunk_sweep_oracle) {
                     const bool reference=chunk_sweep_oracle ? chunk==chunks.front() && repeat==0 : exact_sweep?repeat%4==0:!layer_major;
                     if(reference) { reference_logits=actual; if(chunk_sweep_oracle)chunk_reference=actual; }
