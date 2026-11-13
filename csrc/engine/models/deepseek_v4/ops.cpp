@@ -624,10 +624,10 @@ void PoolState::reset(int64_t batch, int64_t max_positions, int device) {
         return;
     capacity = std::max<int64_t>(1, (max_positions + ratio - 1) / ratio);
     const int64_t output_dim = overlap ? 2 * head_dim : head_dim;
-    const auto fp32 = ::tyloi::TensorOptions()
+    auto fp32 = ::tyloi::TensorOptions()
                     .device(::tyloi::Device(::tyloi::kCUDA, device))
                     .dtype(::tyloi::kFloat32);
-    const auto half = fp32.dtype(::tyloi::kFloat16);
+    auto half = fp32.dtype(::tyloi::kFloat16);
     if (state_kv.defined() && state_kv.device() == ::tyloi::Device(::tyloi::kCUDA, device) &&
         state_kv.size(0) == batch && pool.size(1) == capacity) {
         state_kv.dense().zero_();

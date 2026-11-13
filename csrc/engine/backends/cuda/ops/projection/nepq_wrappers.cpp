@@ -1,9 +1,6 @@
 #include "backend.h"
 #include "nepq_raw.h"
 
-#include <algorithm>
-#include <limits>
-
 /** Apply the signed block Hadamard transform to CUDA activations. */
 ::tyloi::DenseTensor nepq_hadamard_input_cuda(
     ::tyloi::DenseTensor input,
@@ -21,26 +18,17 @@
         block_size >= 2 && block_size <= 2048 &&
         (block_size & (block_size - 1)) == 0,
         "NEPQ Hadamard block must be a power of two in [2,2048]");
-    const int64_t rows = input.size(0);
-    TYLOINFER_RUNTIME_CHECK(input.size(1) <= std::numeric_limits<int>::max(),
-        "NEPQ Hadamard input width exceeds kernel limit");
+    const int rows = static_cast<int>(input.size(0));
     const int width = static_cast<int>(input.size(1));
     TYLOINFER_RUNTIME_CHECK(signs.numel() == width, "NEPQ Hadamard sign width mismatch");
     TYLOINFER_RUNTIME_CHECK(width % block_size == 0, "NEPQ Hadamard block must divide K");
     MfqCudaGuard guard(input.device());
     auto output = ::tyloi::cuda::empty_like(input);
     cudaStream_t stream = mfq_current_cuda_stream();
-    const auto* source = static_cast<const __half*>(input.data_ptr());
-    auto* destination = static_cast<__half*>(output.data_ptr());
-    for (int64_t row = 0; row < rows;) {
-        const int count = static_cast<int>(std::min<int64_t>(rows - row, 65535));
-        const auto offset = row * static_cast<int64_t>(width);
-        tyloi::cuda::nepq_raw::input(source + offset, signs.data_ptr<int8_t>(),
-            destination + offset, count, width, static_cast<int>(block_size), stream);
-        TYLOINFER_RUNTIME_CHECK(cudaGetLastError() == cudaSuccess,
-            "NEPQ Hadamard input kernel launch failed");
-        row += count;
-    }
+    tyloi::cuda::nepq_raw::input(input.data_ptr(), signs.data_ptr<int8_t>(),
+        output.data_ptr(), rows, width, static_cast<int>(block_size), stream);
+    TYLOINFER_RUNTIME_CHECK(cudaGetLastError() == cudaSuccess,
+                "NEPQ Hadamard input kernel launch failed");
     return output;
 }
 
@@ -62,9 +50,7 @@
         block_size >= 2 && block_size <= 2048 &&
         (block_size & (block_size - 1)) == 0,
         "NEPQ Hadamard adjoint block must be a power of two in [2,2048]");
-    const int64_t rows = input.size(0);
-    TYLOINFER_RUNTIME_CHECK(input.size(1) <= std::numeric_limits<int>::max(),
-        "NEPQ Hadamard adjoint width exceeds kernel limit");
+    const int rows = static_cast<int>(input.size(0));
     const int width = static_cast<int>(input.size(1));
     TYLOINFER_RUNTIME_CHECK(
         signs.numel() == width && width % block_size == 0,
@@ -74,16 +60,12 @@
         "NEPQ Hadamard adjoint tensors must share one CUDA device");
     MfqCudaGuard guard(input.device());
     auto output = ::tyloi::cuda::empty_like(input);
-    const auto* source = static_cast<const __half*>(input.data_ptr());
-    auto* destination = static_cast<__half*>(output.data_ptr());
-    const auto stream = mfq_current_cuda_stream();
-    for (int64_t row = 0; row < rows;) {
-        const int count = static_cast<int>(std::min<int64_t>(rows - row, 65535));
-        const auto offset = row * static_cast<int64_t>(width);
-        tyloi::cuda::nepq_raw::adjoint(source + offset, signs.data_ptr<int8_t>(),
-            destination + offset, count, width, static_cast<int>(block_size), stream);
-        TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-        row += count;
+    if (rows == 0) {
+        return output;
     }
+    tyloi::cuda::nepq_raw::adjoint(input.data_ptr(), signs.data_ptr<int8_t>(),
+        output.data_ptr(), rows, width, static_cast<int>(block_size),
+        mfq_current_cuda_stream());
+    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
 }
