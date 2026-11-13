@@ -8,7 +8,6 @@
 #include "diagnostics/numerics/flash_reject.h"
 #include "diagnostics/numerics/mfq.h"
 #include "diagnostics/numerics/sq4.h"
-#include "diagnostics/numerics/gemma.h"
 #include "diagnostics/numerics/tq_load.h"
 #include "diagnostics/numerics/tq.h"
 #include <exception>
@@ -30,7 +29,6 @@ int main(int argc, char **argv) {
             !tyloi::diagnostics::numerics::run_flash_reject(value) &&
             !tyloi::diagnostics::numerics::run_mfq(value) &&
             !tyloi::diagnostics::numerics::run_sq4(value) &&
-            !tyloi::diagnostics::numerics::run_gemma(value) &&
             !tyloi::diagnostics::numerics::run_tq_load(value))
             tyloi::diagnostics::numerics::run_tq(value);
         return 0;

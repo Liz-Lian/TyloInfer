@@ -63,6 +63,9 @@ def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
             str(Path(path).resolve().relative_to(_ROOT)): _hash(path) for path in _ext._SOURCES
         }
         kernel = _ext.ext()
+        binary_hash = _hash(kernel.__file__)
+        if source.get('jit_binary_sha256', binary_hash) != binary_hash:
+            raise ValueError('Loaded JIT module differs from the fixed case')
         eps = config['eps']
         if case.data['op'] == 'gemma_pre_norms':
             attn_post = kernel.rms_norm_f16_cuda(values['attn'], values['weight0'], eps, 0.0)
@@ -83,7 +86,7 @@ def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
                     kernel.acc_cuda(values['residual'], post) * values['layer_scale']
                 ).contiguous()
             }
-        if source['kernel_sources_sha256'] != _sources() or any(
+        if _hash(kernel.__file__) != binary_hash or source['kernel_sources_sha256'] != _sources() or any(
             _hash(_ROOT / path) != digest for path, digest in jit_sources.items()
         ):
             raise ValueError('Shared kernel sources changed during computation')
@@ -92,15 +95,62 @@ def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
             device, 'Original materialized shared CUDA kernels and Torch operations'
         )
         provenance.update(
-            category='native_execution_consistency',
+            category=config['category'],
             independence='Shared CUDA kernels; this is not an independent numerical reference',
             kernel_sources_sha256=source['kernel_sources_sha256'],
             jit_sources_sha256=jit_sources,
-            jit_binary_sha256=_hash(kernel.__file__),
+            jit_binary_sha256=binary_hash,
             binary_build_identity='Loaded binary recorded; correspondence to source not verified',
             generator_sha256=_hash(__file__),
         )
         return write_result(case, root, specs, provenance)
+
+
+def candidate(case: Case, root: Path, device: str = 'cuda') -> Path:
+    """Run the original fused path using the case's recorded JIT module."""
+    device = resolve_device(device)
+    config = case.data['config']
+    source = case.data['source']
+    if (
+        case.data['op'] not in {'gemma_pre_norms', 'gemma_ffn_merge'}
+        or source.get('generator') != 'tests/numerics/gemma_ref.py'
+        or case.data.get('actual_role') != 'candidate'
+        or source.get('kernel_sources_sha256') != _sources()
+        or not source.get('jit_binary_sha256')
+    ):
+        raise ValueError('Unsupported Gemma candidate or changed shared kernel sources')
+    values = {name: torch.from_numpy(case.tensor(name)).to(device) for name in case.data['inputs']}
+    with scope(config['compute']):
+        from tyloinfer.kernels.cuda import _ext
+
+        kernel = _ext.ext()
+        binary_hash = _hash(kernel.__file__)
+        if binary_hash != source['jit_binary_sha256']:
+            raise ValueError('Loaded JIT module differs from the fixed case')
+        eps = config['eps']
+        if case.data['op'] == 'gemma_pre_norms':
+            result = kernel.gemma4_attn_residual_pre_norms_f16_cuda(
+                values['residual'], values['attn'], *(values[f'weight{i}'] for i in range(4)), eps
+            )
+            outputs = dict(zip(('residual', 'dense', 'router', 'moe'), result, strict=True))
+        else:
+            outputs = {'output': kernel.gemma4_ffn_merge_f16_cuda(
+                values['dense'], values['moe'], values['residual'],
+                *(values[f'weight{i}'] for i in range(3)), values['layer_scale'], eps
+            )}
+        if source['kernel_sources_sha256'] != _sources() or _hash(kernel.__file__) != binary_hash:
+            raise ValueError('JIT module or shared kernel sources changed during computation')
+        specs = {name: save_tensor(root, name, _array(value)) for name, value in outputs.items()}
+        provenance = execution(device, 'Original fused CUDA kernel from the same JIT module')
+        provenance.update(
+            category=config['category'],
+            independence='Shared CUDA kernels; this is not an independent numerical reference',
+            kernel_sources_sha256=source['kernel_sources_sha256'],
+            jit_binary_sha256=binary_hash,
+            binary_build_identity='Same loaded module binary as the fixed materialized reference',
+            generator_sha256=_hash(__file__),
+        )
+        return write_result(case, root, specs, provenance, role='candidate')
 
 
 def generate(root: Path, suite: str = 'norm', device: str = 'cuda') -> list[Path]:
@@ -108,6 +158,10 @@ def generate(root: Path, suite: str = 'norm', device: str = 'cuda') -> list[Path
     if suite not in {'norm', 'merge'}:
         raise ValueError(f'Unknown Gemma reference suite: {suite}')
     device = resolve_device(device)
+    with scope(settings()):
+        from tyloinfer.kernels.cuda import _ext
+
+        binary_hash = _hash(_ext.ext().__file__)
     paths = []
     for rows in (1, 16):
         norm = suite == 'norm'
@@ -142,7 +196,7 @@ def generate(root: Path, suite: str = 'norm', device: str = 'cuda') -> list[Path
                 'width': 2816,
                 'eps': 1e-6,
                 'seed': seed,
-                'category': 'native_execution_consistency',
+                'category': 'jit_same_build_execution_consistency',
                 'compute': settings(),
             },
             {
@@ -151,8 +205,10 @@ def generate(root: Path, suite: str = 'norm', device: str = 'cuda') -> list[Path
                 'test': f'tests/test_kernels_cuda.py::{test}',
                 'test_sha256': _hash(_ROOT / 'tests/test_kernels_cuda.py'),
                 'kernel_sources_sha256': _sources(),
+                'jit_binary_sha256': binary_hash,
                 'independence': 'Shared CUDA kernels; execution consistency only',
             },
+            actual_role='candidate',
         )
         for name, value in values.items():
             writer.input(name, _array(value))

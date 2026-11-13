@@ -269,6 +269,8 @@ def main(argv=None):
                 from .attn_ref import candidate
             elif generator == 'tests/numerics/mx_ref.py':
                 from .mx_ref import candidate
+            elif generator == 'tests/numerics/gemma_ref.py':
+                from .gemma_ref import candidate
             elif generator == 'tests/numerics/nint_ref.py':
                 from .nint_ref import candidate
             elif generator == 'tests/numerics/zero_ref.py':
@@ -291,7 +293,8 @@ def main(argv=None):
                 raise ValueError('Unsupported candidate source')
             if needs_source:
                 path = candidate(case, args.output, args.source, args.device)
-            elif generator in {'tests/numerics/attn_ref.py', 'tests/numerics/mx_ref.py'}:
+            elif generator in {'tests/numerics/attn_ref.py', 'tests/numerics/mx_ref.py',
+                               'tests/numerics/gemma_ref.py'}:
                 path = candidate(case, args.output, args.device)
             else:
                 path = candidate(case, args.output)
