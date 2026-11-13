@@ -84,6 +84,13 @@ bool allows_free(Policy policy) {
         policy==Policy::gdn_fixed_geometry || policy==Policy::gdn_inplace_state || policy==Policy::qsa_fusion;
 }
 
+bool allows_resident_legacy(Policy policy) {
+    return policy==Policy::mhc_fusion || policy==Policy::mhc_shared_norm ||
+        policy==Policy::mhc_dense_fusion || policy==Policy::mhc_packed_groups ||
+        policy==Policy::mhc_fixed_formats || policy==Policy::mhc_async_normalized ||
+        policy==Policy::gdn_fixed_geometry || policy==Policy::gdn_inplace_state;
+}
+
 /** Own temporary environment changes until the execution resources retire. */
 struct Settings {
     std::vector<std::unique_ptr<Environment>> values;
@@ -126,8 +133,12 @@ int run_policy(Program& program, Tensor ids, const PolicyOptions& options) {
     if(options.gen<=1 || (!options.forced.empty() && options.forced.size()!=std::size_t(options.gen-1)))
         throw std::invalid_argument("runtime comparison requires valid fixed decode inputs and gen>1");
     const auto& cache=program.config().cache;
-    if(cache.mapped || !program.config().weights.preload || program.weights().decode()!=weights::Cache::Decode::routed)
-        throw std::invalid_argument("runtime comparison requires preloaded routed weights and unmapped cache");
+    const bool routed=program.weights().decode()==weights::Cache::Decode::routed;
+    if(!routed && options.policy==Policy::qsa_fusion && program.weights().legacy_experts_resident())
+        throw std::invalid_argument("QSA fusion comparison requires the routed graph path");
+    const bool legacy=allows_resident_legacy(options.policy) && program.weights().legacy_experts_resident();
+    if(cache.mapped || !program.config().weights.preload || (!routed && !legacy))
+        throw std::invalid_argument("runtime comparison requires preloaded eligible expert weights and unmapped cache");
     if(options.forced.empty() && !(allows_free(options.policy) && cache.ram_fraction && *cache.ram_fraction==1.0))
         throw std::invalid_argument("runtime comparison requires fixed inputs or an eligible GPU-only free-decode comparison");
     auto loader=program.loader();

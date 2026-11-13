@@ -5,6 +5,9 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/moe/expert_cache.h"
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/weights/moe/expert_cache_internal.h"
+#endif
 #include "engine/weights/source/source.h"
 #include "engine/weights/tq/cache.h"
 #include "env.h"
@@ -130,6 +133,16 @@ Cache::Transfer Cache::transfer() const {
 
 Cache::Decode Cache::decode() const {
     return data_->tq ? Decode::routed : Decode::none;
+}
+
+bool Cache::legacy_experts_resident() const {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    const auto& cache = data_->moe;
+    return cache && cache->has_sources() && cache->finalized() &&
+        cache->complete_residency() && cache->budget_bytes() > 0;
+#else
+    return false;
+#endif
 }
 
 bool Cache::split_prefill(std::int64_t rows) const {

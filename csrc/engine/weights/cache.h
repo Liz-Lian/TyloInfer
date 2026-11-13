@@ -103,6 +103,8 @@ public:
     bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;
     Transfer transfer() const;
     Decode decode() const;
+    /** Report whether registered legacy experts completed preloading. */
+    bool legacy_experts_resident() const;
     bool split_prefill(std::int64_t rows) const;
     bool prepare_graph(Device device);
     bool needs_finalize() const;
