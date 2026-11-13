@@ -385,22 +385,18 @@ def native(
     )
 
 
-def generate(
+def freeze(
     root: Path,
     hf_root: Path,
-    dataset: Path,
+    tokens: np.ndarray,
+    input_source: dict,
     rules: Path | None = None,
     *,
-    context: int = 512,
-    chunks: int = 8,
     layerwise: bool = True,
-) -> list[Path]:
-    """Freeze actual original-HF WT2 inputs and run the independent MLX reference.
-
-    Without explicit rules, observations are retained without numeric judgment.
-    """
-    from tyloinfer.server.services.evaluation_datasets import WT2_TEXT_SHA256
-
+) -> Case:
+    """Freeze fixed tokens and model identity using the WT2 observation contract."""
+    if not isinstance(input_source, dict) or not input_source:
+        raise ValueError('Fixed input provenance is required')
     rules_bytes = Path(rules).read_bytes() if rules is not None else None
     criteria = (
         _rules(json.loads(rules_bytes))
@@ -411,26 +407,31 @@ def generate(
         }
     )
     source = ReferenceSource(hf_root)
-    if type(context) is not int or context < 32 or type(chunks) is not int or chunks < 1:
-        raise ValueError('Invalid WT2 context or window count')
-    dataset = Path(dataset)
-    dataset_identity = _file(dataset)
-    if dataset_identity['sha256'] != WT2_TEXT_SHA256:
-        raise ValueError('WT2 generation requires the official mfq-wt2-text-v1 corpus')
     identity = _model(source)
     model_config = _file(source.path / 'config.json')
-    vocab = int(source.text.get('vocab_size', source.config.get('vocab_size', 0)))
-    tokens, tokenizer = tokenize_windows(
-        source.path, dataset.read_text(encoding='utf-8'), context, chunks, vocab
-    )
     vocab, width, layers = _geometry(source, tokens)
-    if (
-        _model(source) != identity
-        or _file(source.path / 'config.json') != model_config
-        or _file(dataset) != dataset_identity
-    ):
-        raise ValueError('HF model or WT2 corpus changed while preparing inputs')
+    chunks, context = tokens.shape
     _framework()
+    provenance = {
+        'generator': 'tests/numerics/wt2_ref.py',
+        'generator_sha256': _file(__file__)['sha256'],
+        'model_files': identity,
+        'model_config': model_config,
+        'input_source': input_source,
+        'implementation': _implementation(),
+        'category': 'original_hf_model_reference',
+        'source_tests': {
+            name: _file(Path(__file__).parents[1] / name)['sha256']
+            for name in ('test_native_wt2_reference.py', 'test_wt2_reference.py')
+        },
+        'quality_checks': [
+            'original resident/layerwise equality and memory-pressure fallback',
+            'original model-family and source-precision parameter combinations',
+        ],
+    }
+    if input_source.get('kind') == 'official_wt2':
+        provenance['dataset'] = input_source['dataset']
+        provenance['tokenizer'] = input_source['tokenizer']
     writer = CaseWriter(
         root,
         'wt2_reference',
@@ -451,24 +452,7 @@ def generate(
             'head_observation': 'F32 selected logits after original final norm and softcap',
             'cuda_limitations': 'existing CUDA reference rejects Gemma shared KV and per-layer embeddings',
         },
-        {
-            'generator': 'tests/numerics/wt2_ref.py',
-            'generator_sha256': _file(__file__)['sha256'],
-            'model_files': identity,
-            'model_config': model_config,
-            'tokenizer': tokenizer,
-            'dataset': dataset_identity,
-            'implementation': _implementation(),
-            'category': 'original_hf_model_reference',
-            'source_tests': {
-                name: _file(Path(__file__).parents[1] / name)['sha256']
-                for name in ('test_native_wt2_reference.py', 'test_wt2_reference.py')
-            },
-            'quality_checks': [
-                'original resident/layerwise equality and memory-pressure fallback',
-                'original model-family and source-precision parameter combinations',
-            ],
-        },
+        provenance,
     )
     writer.input('tokens', tokens)
     writer.input('positions', np.broadcast_to(np.arange(context, dtype=np.int32), tokens.shape))
@@ -491,6 +475,57 @@ def generate(
             writer.output(
                 f'target_logp_{chunk}_{offset}', (rows,), 'float32', criteria['target_logp']['rule']
             )
-    case = writer.finish()
+    if _model(source) != identity or _file(source.path / 'config.json') != model_config:
+        raise ValueError('HF model changed while freezing inputs')
+    return writer.finish()
+
+
+def generate(
+    root: Path,
+    hf_root: Path,
+    dataset: Path,
+    rules: Path | None = None,
+    *,
+    context: int = 512,
+    chunks: int = 8,
+    layerwise: bool = True,
+) -> list[Path]:
+    """Freeze official WT2 windows and run the independent MLX reference."""
+    from tyloinfer.server.services.evaluation_datasets import WT2_TEXT_SHA256
+
+    source = ReferenceSource(hf_root)
+    if type(context) is not int or context < 32 or type(chunks) is not int or chunks < 1:
+        raise ValueError('Invalid WT2 context or window count')
+    dataset = Path(dataset)
+    dataset_identity = _file(dataset)
+    if dataset_identity['sha256'] != WT2_TEXT_SHA256:
+        raise ValueError('WT2 generation requires the official mfq-wt2-text-v1 corpus')
+    identity = _model(source)
+    model_config = _file(source.path / 'config.json')
+    vocab = int(source.text.get('vocab_size', source.config.get('vocab_size', 0)))
+    tokens, tokenizer = tokenize_windows(
+        source.path, dataset.read_text(encoding='utf-8'), context, chunks, vocab
+    )
+    _geometry(source, tokens)
+    if (
+        _model(source) != identity
+        or _file(source.path / 'config.json') != model_config
+        or _file(dataset) != dataset_identity
+    ):
+        raise ValueError('HF model or WT2 corpus changed while preparing inputs')
+    case = freeze(
+        root,
+        hf_root,
+        tokens,
+        {'kind': 'official_wt2', 'dataset': dataset_identity, 'tokenizer': tokenizer},
+        rules,
+        layerwise=layerwise,
+    )
+    if (
+        _model(source) != identity
+        or _file(source.path / 'config.json') != model_config
+        or _file(dataset) != dataset_identity
+    ):
+        raise ValueError('HF model or WT2 corpus changed while freezing inputs')
     reference(case, case.root / 'reference', hf_root)
     return [case.root / 'case.json']

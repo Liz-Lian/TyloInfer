@@ -2005,6 +2005,10 @@ def _gemma4_source_mapper(
     canonical = _already_canonical(source_name)
     if canonical is not None:
         return canonical
+    if source_name in ("model.embed_tokens.weight", "model.norm.weight") or source_name.startswith(
+        "model.layers."
+    ):
+        source_name = "model.language_model." + source_name.removeprefix("model.")
     roots = {
         "model.language_model.embed_tokens.weight": (
             "model.token_embedding.weight",
